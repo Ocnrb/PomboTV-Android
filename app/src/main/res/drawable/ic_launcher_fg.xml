@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Adaptive-icon foreground: a máscara circular mostra só a zona segura
+     central (~66% de 108dp) — o logo ocupa o bitmap todo, por isso precisa de
+     inset ~30% para não ser cortado (launcher E splash usam este drawable). -->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@drawable/pombo_logo"
+    android:inset="30%" />

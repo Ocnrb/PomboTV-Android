@@ -1,0 +1,17 @@
+# Gradle
+.gradle/
+/build/
+app/build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Local machine config — never commit (contains local SDK path)
+local.properties
+
+# IDE
+.idea/
+.kotlin/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db

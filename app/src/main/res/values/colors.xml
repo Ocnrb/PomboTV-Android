@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="bg">#18181B</color>
+    <color name="fg">#E4E4E7</color>
+    <color name="muted">#71717A</color>
+    <color name="accent">#2563EB</color>
+    <color name="accentDark">#1D4ED8</color>
+    <color name="btnGray">#3F3F46</color>
+    <color name="stats">#34D399</color>
+    <color name="error">#F87171</color>
+    <color name="liveRed">#DC2626</color>
+    <color name="card">#232327</color>
+    <color name="ok">#34D399</color>
+    <color name="warn">#FBBF24</color>
+    <color name="launcherBg">#FFFFFF</color>
+</resources>
