@@ -20,7 +20,14 @@ import android.webkit.WebViewClient
  * main-thread queue + per-kind promise chain on the JS side).
  * JS → Native: @JavascriptInterface callbacks (arrive on a WebView binder thread).
  */
-class StreamrBridge(context: Context, private val listener: Listener) {
+class StreamrBridge(
+    context: Context,
+    private val listener: Listener,
+    /** Stream (10 partições) e identidade — injetados na página por replace de
+     *  tokens; mudanças aplicam-se com reconnect() (renasce o mundo JS). */
+    @Volatile var streamId: String,
+    @Volatile var privateKey: String
+) {
 
     interface Listener {
         fun onBridgeStatus(status: String)
@@ -32,6 +39,11 @@ class StreamrBridge(context: Context, private val listener: Listener) {
         fun onBridgeNetInfo(json: String) {}
         /** Live monitor: true = a broadcast is currently on air (audio flowing). */
         fun onBridgeLiveState(live: Boolean) {}
+        /** Mensagem JSON do canal de controlo do meeting (#9). */
+        fun onBridgeMeetCtrl(json: String) {}
+        /** O slot próprio (ms) está bloqueado por um publisher fantasma
+         *  (proxy-only) — o meeting deve re-escolher outro slot. */
+        fun onBridgeMeetSlotBlocked() {}
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -84,8 +96,13 @@ class StreamrBridge(context: Context, private val listener: Listener) {
         webView.resumeTimers()
         bridgeHtml = context.assets.open("streamr_bridge.html").readBytes().toString(Charsets.UTF_8)
         // https base URL: some entry points reject a file:// / null Origin.
-        webView.loadDataWithBaseURL("https://livepoc.local/", bridgeHtml, "text/html", "utf-8", null)
+        webView.loadDataWithBaseURL("https://livepoc.local/", pageHtml(), "text/html", "utf-8", null)
     }
+
+    /** HTML com o stream/identidade ATUAIS — relidos a cada (re)load. */
+    private fun pageHtml() = bridgeHtml
+        .replace("__STREAM_ID__", streamId)
+        .replace("__BRIDGE_PK__", privateKey)
 
     /**
      * Renasce o mundo JS (novo cliente Streamr) mantendo este objeto — usado
@@ -97,7 +114,7 @@ class StreamrBridge(context: Context, private val listener: Listener) {
         connected = false
         inFlightBytes.set(0)
         main.post {
-            webView.loadDataWithBaseURL("https://livepoc.local/", bridgeHtml, "text/html", "utf-8", null)
+            webView.loadDataWithBaseURL("https://livepoc.local/", pageHtml(), "text/html", "utf-8", null)
         }
     }
 
@@ -125,6 +142,12 @@ class StreamrBridge(context: Context, private val listener: Listener) {
 
         @JavascriptInterface
         fun liveState(live: Boolean) { main.post { listener.onBridgeLiveState(live) } }
+
+        @JavascriptInterface
+        fun meetCtrl(json: String) { main.post { listener.onBridgeMeetCtrl(json) } }
+
+        @JavascriptInterface
+        fun meetSlotBlocked() { main.post { listener.onBridgeMeetSlotBlocked() } }
 
         @JavascriptInterface
         fun acked(kind: String, n: Int) {
@@ -155,8 +178,10 @@ class StreamrBridge(context: Context, private val listener: Listener) {
     fun setProxyCounts(pub: Int, sub: Int) = js("bridgeSetProxyCounts($pub,$sub)")
 
     /** meshStart: arranca em malha e promove a proxy; proxyOnly: malha proibida
-     *  (sem fallbacks; publishes sem proxy são descartados na ponte). */
-    fun setModes(meshStart: Boolean, proxyOnly: Boolean) = js("bridgeSetModes($meshStart,$proxyOnly)")
+     *  (sem fallbacks; publishes sem proxy são descartados na ponte);
+     *  onePart: single-partition — áudio+vídeo na #0, a #1 é ignorada. */
+    fun setModes(meshStart: Boolean, proxyOnly: Boolean, onePart: Boolean) =
+        js("bridgeSetModes($meshStart,$proxyOnly,$onePart)")
 
     /** Monitor de live ativo (subscrição leve ao áudio) — onBridgeLiveState. */
     fun monitorStart() = js("bridgeMonitorStart()")
@@ -171,6 +196,18 @@ class StreamrBridge(context: Context, private val listener: Listener) {
      *  conforme o papel e aplica os proxies de publish. */
     fun callStart(role: String) = js("bridgeCallStart('$role')")
     fun callStop() = js("bridgeCallStop()")
+
+    /** Meeting: subscreve o canal de controlo #9 (JSON → onBridgeMeetCtrl). */
+    fun meetCtrlStart() = js("bridgeMeetCtrlStart()")
+    /** Publica JSON no canal de controlo (#9) — base64 evita escaping no eval. */
+    fun meetCtrlPub(json: String) {
+        val b64 = Base64.encodeToString(json.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+        js("bridgeMeetCtrlPub('$b64')")
+    }
+    /** Define o slot próprio: kind 'ms' → partição #slot (+ proxies de publish);
+     *  p0..p8 ficam mapeados para subscrição dos slots remotos. */
+    fun meetStart(slot: Int) = js("bridgeMeetStart($slot)")
+    fun meetStop() = js("bridgeMeetStop()")
 
     fun destroy() {
         main.post { webView.destroy() }

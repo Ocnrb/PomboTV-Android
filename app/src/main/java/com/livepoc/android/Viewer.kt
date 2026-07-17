@@ -139,11 +139,28 @@ class Viewer(
         statsThread = thread(name = "viewer-stats") { statsLoop() }
     }
 
+    /** Password de encriptação (formato Pombo) — pode ser definida/corrigida
+     *  em pleno play: o payload seguinte já decifra. */
+    @Volatile var encPassword: String? = null
+    private var lastEncWarnNs = 0L
+    private fun encWarn(msg: String) {
+        val now = System.nanoTime()
+        if (now - lastEncWarnNs > 2_000_000_000L) { lastEncWarnNs = now; onState(msg) }
+    }
+
     /** Bridge callback — background thread. */
     fun onMessage(kind: String, payload: ByteArray) {
         if (!running) return
         rxBytes += payload.size
-        Wire.forEachRecord(payload) { rec ->
+        var data = payload
+        if (PomboCrypto.isSealed(data)) {
+            val pass = encPassword
+            if (pass.isNullOrEmpty()) { encWarn("encrypted stream — password needed"); return }
+            // 1ª mensagem selada deriva a chave (PBKDF2 310k, algumas centenas de
+            // ms UMA vez neste thread da ponte); depois é cache + AES-GCM (µs)
+            data = PomboCrypto.open(data, pass) ?: run { encWarn("encrypted stream — wrong password"); return }
+        }
+        Wire.forEachRecord(data) { rec ->
             // demux POR REGISTO: nos modos single-partition/mux o áudio viaja na
             // partição de vídeo com FLAG_AUD — o recetor auto-deteta, qualquer
             // que seja o modo do emissor

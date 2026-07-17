@@ -12,8 +12,10 @@
 // JS bridge). Same streams / config as live-poc.html.
 // UM stream, DUAS partições: vídeo em #0, áudio em #1 — uma só sponsorship e
 // um só conjunto de operadores cobre tudo (validado E2E 2026-07-16).
-const OWNER = '0x75fc31876b8cd9af59a0e882d87dd8468c2d0e35';
-const STREAM = OWNER + '/video';
+// Injetados pelo StreamrBridge.kt (replace de tokens ao carregar a página):
+// stream configurável (streams próprios/privados) + identidade persistente.
+const STREAM = '__STREAM_ID__';
+const BRIDGE_PK = '__BRIDGE_PK__';
 // kinds do live (video/audio) + kinds de CHAMADA definidos por bridgeCallStart:
 // cv/ca = o que EU publico (call video/audio), rv/ra = o que recebo do par.
 const PARTS = { video: 0, audio: 1 };
@@ -37,12 +39,22 @@ let proxyCountPub = 2, proxyCountSub = 2;
 // proxyOnly — malha COMPLETAMENTE proibida: sem join de malha, sem fallbacks;
 //             publishes sem proxy ativo são DESCARTADOS (um publish sem proxy
 //             entraria na malha automaticamente) e subscribes esperam operadores.
-let meshStart = false, proxyOnly = false;
-function bridgeSetModes(mesh, pOnly) {
+// onePart (single-partition, modo GLOBAL): áudio+vídeo na #0; a #1 é IGNORADA
+// por completo — nem viewer, nem monitor, nem join lhe tocam.
+let meshStart = false, proxyOnly = false, onePart = false;
+function bridgeSetModes(mesh, pOnly, one) {
   proxyOnly = !!pOnly;
   meshStart = !!mesh && !proxyOnly; // proxy-only anula o fast start
+  const wasOnePart = onePart;
+  onePart = !!one;
   if (proxyOnly) { proxyCountPub = Math.max(1, proxyCountPub); proxyCountSub = Math.max(1, proxyCountSub); }
-  console.log('bridge: modes meshStart=' + meshStart + ' proxyOnly=' + proxyOnly);
+  console.log('bridge: modes meshStart=' + meshStart + ' proxyOnly=' + proxyOnly + ' onePart=' + onePart);
+  // ligou single-partition em plena sessão → largar a subscrição da #1 se existir
+  if (onePart && !wasOnePart) {
+    for (const s of ['audio', 'monitor']) {}
+    if (subs.audio) { const s = subs.audio; delete subs.audio; audioForward = false; if (s) { try { s.unsubscribe(); } catch (e) {} } }
+    if (monitorSub) { const s = monitorSub; monitorSub = null; setLive(false); if (s) { try { s.unsubscribe(); } catch (e) {} } }
+  }
 }
 function bridgeSetProxyCounts(pub, sub) {
   proxyCountPub = Math.max(0, Math.min(3, pub | 0));
@@ -79,18 +91,24 @@ async function pruneDeadProxies(nodes, label) {
   if (ok.length < nodes.length) console.log('bridge: proxies mortos ignorados (' + label + '): ' + (nodes.length - ok.length) + '/' + nodes.length);
   return ok.length ? ok : nodes; // todos a falhar = sonda inconclusiva → manter
 }
-async function discoverProxies(kind) {
+async function discoverProxies(kind) { return discoverProxiesDef(sdef(kind), kind); }
+// Descoberta POR STREAM-PART. Lição (2026-07-17): os operadores atribuem-se
+// por partição (redundância) — um nó descoberto para a #0 ACEITA ligações
+// proxy para a #9/#N mas não está nessa malha → eco local, entrega cruzada
+// ZERO (meeting: todos no slot #0). Nunca semear partições com nós de outras;
+// findProxyNodes(def) devolve os nós certos da partição pedida.
+async function discoverProxiesDef(def, label) {
   const maxWant = Math.max(proxyCountPub, proxyCountSub);
   if (maxWant <= 0) return null; // proxies desativados nas definições
   let lastErr = null;
   for (let want = Math.min(maxWant, 3); want >= 1; want--) { // findProxyNodes lança erro se achar menos do que o pedido
     try {
-      const nodes = await client.findProxyNodes(sdef(kind), want);
-      return await pruneDeadProxies(nodes, kind);
+      const nodes = await client.findProxyNodes(def, want);
+      return await pruneDeadProxies(nodes, label);
     }
     catch (e) { lastErr = e; }
   }
-  console.log('bridge: sem proxies para ' + kind + ' — malha (' + (lastErr && lastErr.message || '') + ')');
+  console.log('bridge: sem proxies para ' + label + ' (#' + def.partition + ') — malha (' + (lastErr && lastErr.message || '') + ')');
   return null;
 }
 async function discoverAllProxies() {
@@ -144,6 +162,7 @@ async function boot() {
     // a retenção do orderer só convertia atraso em rajada (quebra → burst).
     client = new StreamrClientClass({
       orderMessages: false, gapFill: false,
+      auth: { privateKey: BRIDGE_PK }, // identidade persistente (das prefs nativas)
       // LAN: sem isto, candidatos WebRTC de endereços privados são filtrados e
       // um broadcaster na mesma rede local pode ficar inalcançável (o áudio
       // pode ainda passar por um caminho alternativo, o vídeo grande não).
@@ -178,6 +197,7 @@ let jsPub = 0, jsAcked = 0;
 // áudio morto (visto ao vivo com proxies de áudio caídos).
 const jsAckAt = { video: 0, audio: 0 }, jsTryAt = { video: 0, audio: 0 };
 let poDropWarnAt = 0;
+let msBlockedAt = 0; // anti-repique do aviso de slot bloqueado (cannot broadcast)
 const txCount = {}; // diagnóstico: nº de publishes por kind (linha rx de 5s)
 const txFail = {};  // e falhas por kind (client.publish rejeitado)
 function bridgePublish(kind, b64) {
@@ -208,6 +228,12 @@ function bridgePublish(kind, b64) {
         txFail[kind] = (txFail[kind] || 0) + 1;
         if (txFail[kind] === 1 || txFail[kind] % 100 === 0)
           console.log('bridge: publish ' + kind + ' FALHOU ×' + txFail[kind] + ': ' + (e && e.message || e));
+        // slot próprio (ms) bloqueado por publisher FANTASMA (proxy-only): o
+        // nativo re-escolhe o slot. Anti-repique: só 1 aviso por bloqueio.
+        if (kind === 'ms' && /cannot broadcast|already being published/i.test(e && e.message || '')) {
+          const now = Date.now();
+          if (now - (msBlockedAt || 0) > 5000) { msBlockedAt = now; try { Native.meetSlotBlocked(); } catch (x) {} }
+        }
         try { Native.acked(kind, bytes.length); } catch (x) {}
       }
     );
@@ -225,11 +251,9 @@ setInterval(() => {
 
 // NETINFO → consola nativa: por stream, nº de proxies em uso e vizinhos de
 // malha do overlay (0 esperado em modo proxy — o nó sai da malha).
-async function meshNeighbors(kind) {
+async function meshNeighborsSp(sp) {
   try {
     const node = await client.getNode();
-    const d = sdef(kind);
-    const sp = d.streamId + '#' + d.partition;
     if (node.getNeighbors) {
       const ns = await node.getNeighbors(sp);
       if (ns && typeof ns.length === 'number') return ns.length;
@@ -242,11 +266,12 @@ async function meshNeighbors(kind) {
   } catch (e) {}
   return -1;
 }
+function meshNeighbors(kind) { const d = sdef(kind); return meshNeighborsSp(d.streamId + '#' + d.partition); }
 setInterval(async () => {
   if (!client) return;
   const active = k => !!(subs[k] || joins[k] || proxySet[k + 'Sub'] || proxySet[k + 'Pub']);
-  if (!active('video') && !active('audio')) return;
   const info = {};
+  // Live/Watch/Call: video/audio
   for (const kind of ['video', 'audio']) {
     if (!active(kind)) continue;
     const have = (proxyNodes[kind] || []).length;
@@ -254,7 +279,16 @@ setInterval(async () => {
     const pxPub = proxySet[kind + 'Pub'] ? Math.min(proxyCountPub, have) : 0;
     info[kind] = { proxy: Math.max(pxSub, pxPub), mesh: await meshNeighbors(kind) };
   }
-  try { Native.netinfo(JSON.stringify(info)); } catch (e) {}
+  // MEETING: o meu slot (ms, publish) + o controlo (#9) — contador consistente
+  if (PARTS.ms !== undefined) {
+    const haveMs = (proxyNodes.ms || []).length;
+    info['slot#' + PARTS.ms] = { proxy: proxySet['msPub'] ? Math.min(proxyCountPub, haveMs) : 0, mesh: await meshNeighbors('ms') };
+    const haveC = (proxyNodes.ctrl || []).length;
+    const cSub = proxySet['ctrlSub'] ? Math.min(proxyCountSub, haveC) : 0;
+    const cPub = proxySet['ctrlPub'] ? Math.min(proxyCountPub, haveC) : 0;
+    info['ctrl#9'] = { proxy: Math.max(cSub, cPub), mesh: await meshNeighborsSp(mdefCtrl().streamId + '#' + mdefCtrl().partition) };
+  }
+  if (Object.keys(info).length) try { Native.netinfo(JSON.stringify(info)); } catch (e) {}
 }, 5000);
 
 // Watchdog de entrega: uma ligação proxy (ou de malha) pode morrer em silêncio
@@ -312,9 +346,12 @@ setInterval(async () => {
         if (s) { try { await s.unsubscribe(); } catch (e) {} }
       }
       if (USE_PROXY) await discoverAllProxies();
-      // kinds de chamada: refrescar a lista a partir dos operadores do stream
-      for (const k of ['rv', 'ra']) if (stalled.includes(k))
-        proxyNodes[k] = proxyNodes.video || proxyNodes.audio || proxyNodes[k];
+      // kinds de chamada: redescobrir POR PARTIÇÃO (não herdar os nós do live)
+      for (const k of ['rv', 'ra']) if (stalled.includes(k)) {
+        try { proxyNodes[k] = await discoverProxiesDef(sdef(k), k); } catch (e) { proxyNodes[k] = null; }
+        if (!(proxyNodes[k] || []).length && proxyOnly)
+          proxyNodes[k] = proxyNodes.video || proxyNodes.audio || null;
+      }
       const PD = (SDK && SDK.ProxyDirection) ? SDK.ProxyDirection : { PUBLISH: 0, SUBSCRIBE: 1 };
       for (const kind of stalled) {
         const nodes = proxyNodes[kind];
@@ -475,6 +512,9 @@ function setLive(v) {
 }
 async function bridgeMonitorStart() {
   if (!client || monitorSub) return;
+  // single-partition: a #1 é ignorada → o monitor (que subscreve a #1) não corre;
+  // o badge "LIVE now" fica inativo neste modo (trade-off por eficiência).
+  if (onePart) { setLive(false); return; }
   // settle: arrancar em cima do teardown de uma sessão (unsubscribe ainda em
   // curso) deixava esta subscrição morta — esperar que o pó assente.
   try { await monitorBusy; } catch (e) {}
@@ -543,6 +583,12 @@ async function poRetrySubscribe(kind) {
 }
 async function bridgeSubscribe(kind) {
   if (!client || subs[kind]) return;
+  // single-partition: a #1 (áudio) é IGNORADA — o áudio vem demultiplexado da
+  // #0 (FLAG_AUD). Não subscrever; se estava subscrita, largar.
+  if (onePart && kind === 'audio') {
+    console.log('bridge: single-partition → #1 ignorada (subscribe audio no-op)');
+    return;
+  }
   wanted[kind] = true;
   // HANDOVER: o monitor já tem a subscrição de áudio viva (mesma partição,
   // mesmo proxy) — a sessão herda-a e liga o encaminhamento. Arranque ~0s.
@@ -564,7 +610,15 @@ async function bridgeSubscribe(kind) {
   try {
     // Viewer em modo proxy: o stream chega por WebSocket via operadores (sem
     // WebRTC/TURN) — por stream, conforme a sponsorship respetiva.
-    const nodes = proxyNodes[kind];
+    let nodes = proxyNodes[kind];
+    // kinds de chamada/meeting (rv/ra/p0-p8): descoberta POR PARTIÇÃO na 1ª vez
+    // (nós do live só em proxy-only — noutras partições fazem eco sem entregar)
+    if ((!nodes || !nodes.length) && kind !== 'video' && kind !== 'audio' &&
+        !meshStart && proxyCountSub > 0 && !proxySet[kind + 'Sub']) {
+      try { nodes = proxyNodes[kind] = await withTimeout(discoverProxiesDef(sdef(kind), kind), 8000); } catch (e) {}
+      if ((!nodes || !nodes.length) && proxyOnly)
+        nodes = proxyNodes[kind] = proxyNodes.video || proxyNodes.audio || null;
+    }
     if (!meshStart && proxyCountSub > 0 && nodes && nodes.length && !proxySet[kind + 'Sub']) {
       try {
         const dir = (SDK && SDK.ProxyDirection) ? SDK.ProxyDirection.SUBSCRIBE : 1;
@@ -626,6 +680,8 @@ async function bridgeUnsubscribe(kind) {
 // mensagens para o nativo a partir daqui.
 async function bridgeJoin(kind) {
   if (!client || joins[kind]) return;
+  // single-partition: não se entra no overlay da #1 (áudio publica-se na #0)
+  if (onePart && kind === 'audio') return;
   try { await monitorBusy; } catch (e) {}
   try { await withTimeout(proxyDiscovery, 10000); } catch (e) {}
   if (joins[kind]) return;
@@ -674,9 +730,15 @@ async function bridgeCallStart(role) {
   }
   console.log('bridge: call start role=' + role + ' pub=#' + PARTS.cv + '/#' + PARTS.ca + ' sub=#' + PARTS.rv + '/#' + PARTS.ra);
   if (!meshStart) { try { await withTimeout(proxyDiscovery, 10000); } catch (e) {} }
-  // operadores staked servem TODAS as partições — reutilizar os do live
-  for (const k of ['cv', 'ca', 'rv', 'ra'])
-    if (!proxyNodes[k]) proxyNodes[k] = proxyNodes.video || proxyNodes.audio || null;
+  // descoberta POR PARTIÇÃO dos kinds de publish da chamada (rv/ra ficam para
+  // o bridgeSubscribe lazy); nós do live só como fallback em proxy-only
+  for (const k of ['cv', 'ca']) {
+    if (!(proxyNodes[k] || []).length) {
+      try { proxyNodes[k] = await withTimeout(discoverProxiesDef(sdef(k), k), 8000); } catch (e) {}
+      if (!(proxyNodes[k] || []).length && proxyOnly)
+        proxyNodes[k] = proxyNodes.video || proxyNodes.audio || null;
+    }
+  }
   // proxies de PUBLISH das partições próprias (subscribe é o bridgeSubscribe genérico)
   const PD = (SDK && SDK.ProxyDirection) ? SDK.ProxyDirection : { PUBLISH: 0, SUBSCRIBE: 1 };
   for (const k of ['cv', 'ca']) {
@@ -700,6 +762,112 @@ async function bridgeCallStop() {
   for (const k of ['cv', 'ca']) if (proxySet[k + 'Pub']) { try { await setProxiesSerial(sdef(k), [], PD.PUBLISH); } catch (e) {} proxySet[k + 'Pub'] = false; }
   for (const k of ['rv', 'ra']) if (proxySet[k + 'Sub']) { try { await setProxiesSerial(sdef(k), [], PD.SUBSCRIBE); } catch (e) {} proxySet[k + 'Sub'] = false; }
   console.log('bridge: call stop');
+}
+
+// ================= MEETING (single-partition por slot) =================
+// Cada participante publica A/V (FLAG_AUD) na SUA partição (#0-#8) e subscreve
+// as dos outros; a #9 é o canal de CONTROLO/presença em JSON (interop com o
+// v3: {t:'who'|'hb'|'join'|'leave', id, slot}). Kinds: ms = o meu slot
+// (publish), p0..p8 = slots remotos (bridgeSubscribe genérico — herdam modos,
+// gates de proxy-only e retries). O controlo tem caminho próprio porque é
+// JSON, não o wire binário.
+const MEET_CTRL_PART = 9;
+let meetCtrlSub = null;
+function mdefCtrl() { return { streamId: STREAM, partition: MEET_CTRL_PART }; }
+async function bridgeMeetCtrlStart() {
+  if (!client || meetCtrlSub) return;
+  // CONTROLO #9 VIA PROXIES (como o vídeo — atravessa NAT/CGNAT). A #9 é
+  // many-to-many (todos pub+sub a mesma partição) e o modo proxy SUPORTA isso
+  // (diagnóstico 2026-07-18: C1 1→N entrega; C2 pub+sub proxy co-existem).
+  // DUAS regras aprendidas à força:
+  //  1) descoberta POR PARTIÇÃO (#9) — nós da #0 aceitam a ligação mas NÃO
+  //     estão na malha da #9 → eco-only.
+  //  2) SUBSCREVER TRADICIONALMENTE PRIMEIRO, aplicar proxies DEPOIS (a ordem
+  //     inversa quebra a entrega — misturar proxy + subscribe tradicional).
+  try {
+    meetCtrlSub = await subscribeWithRetry(mdefCtrl(), function (content) {
+      try { Native.meetCtrl(JSON.stringify(content)); } catch (e) {}
+    }, 'meet-ctrl');
+    console.log('bridge: meet ctrl subscribed (#9)');
+  } catch (e) { Native.error('meet ctrl subscribe: ' + (e && e.message || e)); return; }
+  // proxies DEPOIS da subscrição (fast start = malha; proxy-only força proxy)
+  if (meshStart) return;
+  const PD = (SDK && SDK.ProxyDirection) ? SDK.ProxyDirection : { PUBLISH: 0, SUBSCRIBE: 1 };
+  let nodes = null;
+  try { nodes = await withTimeout(discoverProxiesDef(mdefCtrl(), 'ctrl'), 8000); } catch (e) {}
+  if ((!nodes || !nodes.length) && proxyOnly) nodes = proxyNodes.video || proxyNodes.audio;
+  if (nodes && nodes.length) {
+    proxyNodes.ctrl = nodes; // registo p/ o netinfo (contador de proxies da #9)
+    try {
+      if (proxyCountSub > 0) { const us = nodes.slice(0, proxyCountSub); await withTimeout(setProxiesSerial(mdefCtrl(), us, PD.SUBSCRIBE, us.length), 15000); proxySet['ctrlSub'] = true; }
+      if (proxyCountPub > 0) { const up = nodes.slice(0, proxyCountPub); await withTimeout(setProxiesSerial(mdefCtrl(), up, PD.PUBLISH, up.length), 15000); proxySet['ctrlPub'] = true; }
+      console.log('bridge: meet ctrl proxies ativos (#9)');
+    } catch (e) { console.log('bridge: meet ctrl proxies falharam → malha: ' + (e && e.message || e)); }
+  }
+}
+function bridgeMeetCtrlPub(b64) {
+  if (!client) return;
+  try {
+    const obj = JSON.parse(atob(b64)); // JSON simples (ASCII) — interop v3
+    client.publish(mdefCtrl(), obj).catch(function (e) {
+      console.log('bridge: meet ctrl pub falhou: ' + (e && e.message || e));
+    });
+  } catch (e) {}
+}
+async function bridgeMeetStart(slot) {
+  const PD = (SDK && SDK.ProxyDirection) ? SDK.ProxyDirection : { PUBLISH: 0, SUBSCRIBE: 1 };
+  // mudança de slot (colisão): limpar o caminho do slot ANTIGO antes de remapear
+  if (PARTS.ms !== undefined && PARTS.ms !== slot) {
+    if (proxySet['msPub']) { try { await setProxiesSerial(sdef('ms'), [], PD.PUBLISH); } catch (e) {} delete proxySet['msPub']; }
+    const j = joins.ms; delete joins.ms;
+    if (j) { try { await j.unsubscribe(); } catch (e) {} }
+  }
+  PARTS.ms = slot;
+  for (let s = 0; s <= 8; s++) {
+    PARTS['p' + s] = s;
+    rx['p' + s] = rx['p' + s] || 0; rx['p' + s + 'Bytes'] = rx['p' + s + 'Bytes'] || 0;
+    // sem seed: o bridgeSubscribe descobre por partição quando o slot for preciso
+  }
+  rx.ms = 0; rx.msBytes = 0; jsAckAt.ms = 0; jsTryAt.ms = 0;
+  chains.ms = Promise.resolve();
+  // descoberta POR PARTIÇÃO do slot próprio (nós do live só em proxy-only)
+  proxyNodes.ms = null;
+  try { proxyNodes.ms = await withTimeout(discoverProxiesDef(sdef('ms'), 'ms'), 8000); } catch (e) {}
+  if ((!proxyNodes.ms || !proxyNodes.ms.length) && proxyOnly)
+    proxyNodes.ms = proxyNodes.video || proxyNodes.audio || null;
+  console.log('bridge: meet start slot=#' + slot);
+  const nodes = proxyNodes.ms;
+  if (proxyCountPub > 0 && nodes && nodes.length) {
+    try {
+      const use = nodes.slice(0, proxyCountPub);
+      await withTimeout(setProxiesSerial(sdef('ms'), use, PD.PUBLISH, use.length), 15000);
+      proxySet['msPub'] = true;
+      console.log('bridge: meet proxy-PUBLISH ms ativo (#' + slot + ')');
+    } catch (e) { console.log('bridge: meet proxy-PUBLISH falhou: ' + (e && e.message || e)); }
+  }
+  if (!proxySet['msPub'] && !proxyOnly) {
+    // malha: participar no próprio overlay (publisher puro entrega mal)
+    try { joins.ms = await subscribeWithRetry(sdef('ms'), function () {}, 'join-ms'); } catch (e) {}
+  }
+}
+async function bridgeMeetStop() {
+  const s = meetCtrlSub; meetCtrlSub = null;
+  if (s) { try { await s.unsubscribe(); } catch (e) {} }
+  const j = joins.ms; delete joins.ms;
+  if (j) { try { await j.unsubscribe(); } catch (e) {} }
+  for (let i = 0; i <= 8; i++) { try { await bridgeUnsubscribe('p' + i); } catch (e) {} }
+  const PD = (SDK && SDK.ProxyDirection) ? SDK.ProxyDirection : { PUBLISH: 0, SUBSCRIBE: 1 };
+  if (proxySet['msPub']) { try { await setProxiesSerial(sdef('ms'), [], PD.PUBLISH); } catch (e) {} delete proxySet['msPub']; }
+  for (let i = 0; i <= 8; i++) if (proxySet['p' + i + 'Sub']) {
+    try { await setProxiesSerial(sdef('p' + i), [], PD.SUBSCRIBE); } catch (e) {}
+    delete proxySet['p' + i + 'Sub'];
+  }
+  try { await setProxiesSerial(mdefCtrl(), [], PD.SUBSCRIBE); } catch (e) {}
+  try { await setProxiesSerial(mdefCtrl(), [], PD.PUBLISH); } catch (e) {}
+  delete proxySet['ctrlSub']; delete proxySet['ctrlPub'];
+  proxyNodes.ctrl = null; proxyNodes.ms = null;
+  delete PARTS.ms;
+  console.log('bridge: meet stop');
 }
 
 boot();

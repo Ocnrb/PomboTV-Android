@@ -45,17 +45,17 @@ class Broadcaster(
     private val kindVideo: String = "video",
     private val kindAudio: String = "audio",
     private val manageOverlays: Boolean = true,
-    // EXPERIMENTAL — A/V na MESMA partição (o recetor demultiplexa por FLAG_AUD):
-    // singlePartition: áudio publica-se na partição de vídeo (mensagens próprias)
-    // muxAV: áudio entra nos MESMOS containers do vídeo (menos msgs/s; o áudio
-    //        herda o destino/cadência do vídeo). muxAV implica singlePartition.
+    // SINGLE-PARTITION (modo global): áudio publica-se na partição de VÍDEO com
+    // FLAG_AUD (mensagens próprias); o recetor demultiplexa e a #1 é ignorada.
     private val singlePartition: Boolean = false,
-    private val muxAV: Boolean = false,
     // PARTILHA DE ECRÃ: em vez da câmara, um VirtualDisplay (MediaProjection)
     // espelha o ecrã diretamente para a surface do encoder. Sem preview (o
     // espelho de si próprio seria recursivo), sem torch/zoom, rotation=0.
     // (é o valor INICIAL — a fonte pode mudar em pleno live via setVideoSource)
     screenProjection: android.media.projection.MediaProjection? = null,
+    // MEETING/espectador: arrancar SEM fonte de vídeo (câmara fechada, LED off);
+    // o encoder fica idle e só o áudio publica. Ligar depois = setVideoSource.
+    private val startWithVideo: Boolean = true,
     private val onStats: (String) -> Unit,
     private val onError: (String) -> Unit,
     private val onCameraInfo: (sensorOrientation: Int, hasTorch: Boolean, minZoom: Float, maxZoom: Float) -> Unit = { _, _, _, _ -> },
@@ -91,8 +91,22 @@ class Broadcaster(
     // Streamr SDK has its own; what WE control is how much we feed it).
     // Signal: bytes accepted for publish but not yet drained (bridge.inFlight()).
     @Volatile private var curBitrate = bitrate
+    // teto de bitrate — o máximo que o congestion-control persegue. Ajustável
+    // pelo bitrate adaptativo do meeting (baixa conforme entram participantes,
+    // sobe quando saem), independente do controlo reativo por backpressure.
+    @Volatile private var bitrateCeiling = bitrate
     @Volatile private var dropUntilKey = false
     private var calmSecs = 0
+
+    /** Teto de bitrate adaptativo (meeting): baixa já o curBitrate se preciso;
+     *  o congestion-control passa a subir só até este teto. */
+    fun setBitrateCeiling(bps: Int) {
+        bitrateCeiling = bps.coerceIn(150_000, bitrate)
+        if (curBitrate > bitrateCeiling) {
+            curBitrate = bitrateCeiling
+            try { vCodec?.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, curBitrate) }) } catch (e: Exception) {}
+        }
+    }
 
     // Live controls (UI): muted mic keeps packets flowing — the viewers' audio
     // master clock depends on them; torch; digital zoom.
@@ -284,18 +298,50 @@ class Broadcaster(
         }
     }
 
+    /** CÂMARA OFF (meeting): fecha a fonte de vídeo atual (câmara/projection —
+     *  LED apaga) e o encoder fica idle; o áudio continua a publicar. Religar
+     *  = setVideoSource(camId, null, w, h). */
+    fun stopVideoSource() {
+        camHandler.post {
+            try { virtualDisplay?.surface = null } catch (e: Exception) {}
+            try { virtualDisplay?.release() } catch (e: Exception) {}
+            virtualDisplay = null
+            val oldProj = screenProj
+            screenProj = null
+            if (oldProj != null) { try { oldProj.stop() } catch (e: Exception) {} }
+            try { session?.close() } catch (e: Exception) {}
+            session = null
+            try { camera?.close() } catch (e: Exception) {}
+            camera = null
+        }
+    }
+
+    /** Password de encriptação (formato Pombo) — definir ANTES de start(). */
+    @Volatile var encPassword: String? = null
+
+    /** Todos os publishes de média passam aqui: com password, o payload inteiro
+     *  (container) é selado [0xC2][salt‖iv‖ct] — 1 AES por mensagem. */
+    private fun pubSealed(kind: String, payload: ByteArray) {
+        val p = encPassword
+        bridge.publish(kind, if (p.isNullOrEmpty()) payload else PomboCrypto.seal(payload, p))
+    }
+
     fun start() {
         running = true
+        // o KDF (310k iterações) corre AGORA em background — não no 1º frame
+        encPassword?.let { p -> thread(name = "enc-kdf") { PomboCrypto.prederive(p) } }
         try {
             startVideoEncoder()
         } catch (e: Exception) {
             onError("H.264 encoder failed: ${e.message}")
             return
         }
-        if (screenProj != null) {
-            if (!attachScreenSource()) return
-        } else {
-            openCamera()
+        if (startWithVideo) {
+            if (screenProj != null) {
+                if (!attachScreenSource()) return
+            } else {
+                openCamera()
+            }
         }
         aThread = thread(name = "audio-enc") { audioLoop() }
         // Join own overlays as a participant — pure publishers get poor delivery.
@@ -353,9 +399,9 @@ class Broadcaster(
                     vCodec?.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0) })
                 } catch (e: Exception) {}
             }
-        } else if (++calmSecs >= 10 && curBitrate < bitrate) {
+        } else if (++calmSecs >= 10 && curBitrate < bitrateCeiling) {
             calmSecs = 0
-            curBitrate = Math.min(bitrate, (curBitrate * 1.15).toInt() + 50_000)
+            curBitrate = Math.min(bitrateCeiling, (curBitrate * 1.15).toInt() + 50_000)
             try {
                 vCodec?.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, curBitrate) })
             } catch (e: Exception) {}
@@ -508,7 +554,7 @@ class Broadcaster(
         if (isKey) {
             bKfBytes = data.size; bKfFrags = records.size
             flushVBatch() // keep order: pending deltas first
-            for (r in records) { bridge.publish(kindVideo, Wire.container(listOf(r))); bMsg++ }
+            for (r in records) { pubSealed(kindVideo, Wire.container(listOf(r))); bMsg++ }
             bPub++
         } else {
             synchronized(vBatch) {
@@ -538,7 +584,7 @@ class Broadcaster(
     private fun flushVBatchLocked() {
         if (vBatch.isEmpty()) return
         val recs = ArrayList(vBatch); vBatch.clear()
-        bridge.publish(kindVideo, Wire.container(recs))
+        pubSealed(kindVideo, Wire.container(recs))
         bPub += recs.size; bMsg++
     }
 
@@ -663,14 +709,6 @@ class Broadcaster(
     private fun onAudioPacket(data: ByteArray, tsUs: Double) {
         if (aTsBaseUs < 0) aTsBaseUs = tsUs
         val rec = Wire.packMedia(true, tsUs - aTsBaseUs, 20_000.0, data, null, isAudio = true)[0]
-        if (muxAV) {
-            // mux: o áudio viaja nos containers do vídeo (flush pela cadência dele)
-            synchronized(vBatch) {
-                vBatch.add(rec)
-                if (vBatch.size >= Wire.VBATCH_MAX + Wire.ABATCH_MAX) flushVBatchLocked()
-            }
-            return
-        }
         synchronized(aBatch) {
             aBatch.add(rec)
             if (aBatch.size >= Wire.ABATCH_MAX) flushABatchLocked()
@@ -681,7 +719,7 @@ class Broadcaster(
         if (aBatch.isEmpty()) return
         val recs = ArrayList(aBatch); aBatch.clear()
         // single-partition: mensagens de áudio próprias, mas na partição de vídeo
-        bridge.publish(if (singlePartition) kindVideo else kindAudio, Wire.container(recs))
+        pubSealed(if (singlePartition) kindVideo else kindAudio, Wire.container(recs))
     }
 
     fun stop() {

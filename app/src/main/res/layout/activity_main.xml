@@ -144,6 +144,18 @@
                 android:textColor="#FFFFFF"
                 android:textSize="16sp"
                 android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/goMeet"
+                android:layout_width="match_parent"
+                android:layout_height="60dp"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/bg_btn_secondary"
+                android:text="Meeting (beta)"
+                android:textAllCaps="false"
+                android:textColor="#FFFFFF"
+                android:textSize="16sp"
+                android:textStyle="bold" />
         </LinearLayout>
     </ScrollView>
 
@@ -326,6 +338,134 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content" />
                 </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Single partition"
+                            android:textColor="@color/fg"
+                            android:textSize="13sp" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Audio + video in one partition; #1 fully ignored"
+                            android:textColor="@color/muted"
+                            android:textSize="10sp" />
+                    </LinearLayout>
+
+                    <Switch
+                        android:id="@+id/onePartSw"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:background="@drawable/bg_card"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:letterSpacing="0.1"
+                    android:text="IDENTITY &amp; STREAM"
+                    android:textColor="@color/muted"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:text="Stream ID (10 partitions)"
+                    android:textColor="@color/muted"
+                    android:textSize="11sp" />
+
+                <EditText
+                    android:id="@+id/streamIdEdit"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="monospace"
+                    android:importantForAutofill="no"
+                    android:inputType="text"
+                    android:textColor="@color/fg"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:text="Identity private key"
+                    android:textColor="@color/muted"
+                    android:textSize="11sp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <EditText
+                        android:id="@+id/pkEdit"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:fontFamily="monospace"
+                        android:importantForAutofill="no"
+                        android:inputType="textPassword"
+                        android:textColor="@color/fg"
+                        android:textSize="12sp" />
+
+                    <Button
+                        android:id="@+id/pkNewBtn"
+                        android:layout_width="wrap_content"
+                        android:layout_height="40dp"
+                        android:layout_marginStart="8dp"
+                        android:background="@drawable/bg_btn_secondary"
+                        android:paddingStart="14dp"
+                        android:paddingEnd="14dp"
+                        android:text="New"
+                        android:textAllCaps="false"
+                        android:textColor="#FFFFFF"
+                        android:textSize="12sp" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/netAddr"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:fontFamily="monospace"
+                    android:textColor="@color/muted"
+                    android:textSize="10sp" />
+
+                <Button
+                    android:id="@+id/idApplyBtn"
+                    android:layout_width="match_parent"
+                    android:layout_height="44dp"
+                    android:layout_marginTop="12dp"
+                    android:background="@drawable/bg_btn_secondary"
+                    android:text="Apply &amp; reconnect"
+                    android:textAllCaps="false"
+                    android:textColor="#FFFFFF" />
             </LinearLayout>
 
         </LinearLayout>
@@ -476,41 +616,31 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content" />
 
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="14dp"
-                    android:letterSpacing="0.1"
-                    android:text="TRANSPORT (experimental)"
-                    android:textColor="@color/muted"
-                    android:textSize="11sp"
-                    android:textStyle="bold" />
-
-                <CheckBox
-                    android:id="@+id/onePartCb"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
-                    android:text="Single partition — audio rides the video partition"
-                    android:textColor="@color/fg"
-                    android:textSize="12sp" />
-
-                <CheckBox
-                    android:id="@+id/muxCb"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Mux A/V — audio inside the same messages as video"
-                    android:textColor="@color/fg"
-                    android:textSize="12sp" />
-
                 <CheckBox
                     android:id="@+id/mirrorCb"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
+                    android:layout_marginTop="12dp"
                     android:text="Mirror front camera preview (cosmetic, local only)"
                     android:textColor="@color/fg"
                     android:textSize="12sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:text="Password (optional — viewers must enter it)"
+                    android:textColor="@color/muted"
+                    android:textSize="11sp" />
+
+                <EditText
+                    android:id="@+id/bPassEdit"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:importantForAutofill="no"
+                    android:inputType="textPassword"
+                    android:textColor="@color/fg"
+                    android:textSize="13sp" />
             </LinearLayout>
 
             <LinearLayout
@@ -610,91 +740,97 @@
                 android:textSize="12sp" />
         </LinearLayout>
 
+        <!-- top bar: linha 1 = LIVE/timer/meter + consola à direita; linha 2 = status -->
         <LinearLayout
             android:id="@+id/bTopBar"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:gravity="center_vertical"
-            android:orientation="horizontal"
+            android:orientation="vertical"
             android:padding="12dp">
 
-            <TextView
-                android:layout_width="wrap_content"
+            <LinearLayout
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:background="@drawable/bg_live"
-                android:paddingStart="9dp"
-                android:paddingTop="3dp"
-                android:paddingEnd="9dp"
-                android:paddingBottom="3dp"
-                android:text="LIVE"
-                android:textColor="#FFFFFF"
-                android:textSize="11sp"
-                android:textStyle="bold" />
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
 
-            <TextView
-                android:id="@+id/bTimer"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
-                android:background="@drawable/bg_chip"
-                android:fontFamily="monospace"
-                android:paddingStart="8dp"
-                android:paddingTop="3dp"
-                android:paddingEnd="8dp"
-                android:paddingBottom="3dp"
-                android:text="00:00"
-                android:textColor="#FFFFFF"
-                android:textSize="11sp" />
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/bg_live"
+                    android:paddingStart="9dp"
+                    android:paddingTop="3dp"
+                    android:paddingEnd="9dp"
+                    android:paddingBottom="3dp"
+                    android:text="LIVE"
+                    android:textColor="#FFFFFF"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
 
-            <TextView
-                android:id="@+id/bMeter"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
-                android:background="@drawable/bg_chip"
-                android:fontFamily="monospace"
-                android:paddingStart="8dp"
-                android:paddingTop="3dp"
-                android:paddingEnd="8dp"
-                android:paddingBottom="3dp"
-                android:textColor="@color/fg"
-                android:textSize="11sp" />
+                <TextView
+                    android:id="@+id/bTimer"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:background="@drawable/bg_chip"
+                    android:fontFamily="monospace"
+                    android:paddingStart="8dp"
+                    android:paddingTop="3dp"
+                    android:paddingEnd="8dp"
+                    android:paddingBottom="3dp"
+                    android:text="00:00"
+                    android:textColor="#FFFFFF"
+                    android:textSize="11sp" />
 
-            <Space
-                android:layout_width="0dp"
-                android:layout_height="1dp"
-                android:layout_weight="1" />
+                <TextView
+                    android:id="@+id/bMeter"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:background="@drawable/bg_chip"
+                    android:fontFamily="monospace"
+                    android:paddingStart="8dp"
+                    android:paddingTop="3dp"
+                    android:paddingEnd="8dp"
+                    android:paddingBottom="3dp"
+                    android:textColor="@color/fg"
+                    android:textSize="11sp" />
 
+                <Space
+                    android:layout_width="0dp"
+                    android:layout_height="1dp"
+                    android:layout_weight="1" />
+
+                <!-- consola no canto superior DIREITO, na linha do top bar -->
+                <ImageButton
+                    android:id="@+id/bConsoleBtn"
+                    android:layout_width="34dp"
+                    android:layout_height="34dp"
+                    android:background="@drawable/bg_roundbtn"
+                    android:contentDescription="Console"
+                    android:padding="6dp"
+                    android:scaleType="centerInside"
+                    android:src="@drawable/ic_code" />
+            </LinearLayout>
+
+            <!-- status na 2ª linha, por baixo do LIVE -->
             <TextView
                 android:id="@+id/bStatus"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
                 android:fontFamily="monospace"
                 android:textColor="@color/muted"
                 android:textSize="10sp" />
         </LinearLayout>
 
-        <!-- consola no topo-esquerdo, compacta, junto às stats -->
-        <ImageButton
-            android:id="@+id/bConsoleBtn"
-            android:layout_width="34dp"
-            android:layout_height="34dp"
-            android:layout_gravity="top|start"
-            android:layout_marginStart="12dp"
-            android:layout_marginTop="52dp"
-            android:background="@drawable/bg_roundbtn"
-            android:contentDescription="Console"
-            android:padding="6dp"
-            android:scaleType="centerInside"
-            android:src="@drawable/ic_code" />
-
         <TextView
             android:id="@+id/bStats"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_gravity="top|start"
-            android:layout_marginStart="54dp"
-            android:layout_marginTop="52dp"
+            android:layout_gravity="top|end"
+            android:layout_marginStart="12dp"
+            android:layout_marginTop="84dp"
             android:layout_marginEnd="12dp"
             android:background="@drawable/bg_console"
             android:fontFamily="monospace"
@@ -812,65 +948,85 @@
             android:layout_gravity="center"
             android:indeterminate="true" />
 
+        <!-- top bar: linha 1 = LIVE/timer/meter + consola à direita; linha 2 = status -->
         <LinearLayout
             android:id="@+id/wTopBar"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:gravity="center_vertical"
-            android:orientation="horizontal"
+            android:orientation="vertical"
             android:padding="12dp">
 
-            <TextView
-                android:layout_width="wrap_content"
+            <LinearLayout
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:background="@drawable/bg_live"
-                android:paddingStart="9dp"
-                android:paddingTop="3dp"
-                android:paddingEnd="9dp"
-                android:paddingBottom="3dp"
-                android:text="LIVE"
-                android:textColor="#FFFFFF"
-                android:textSize="11sp"
-                android:textStyle="bold" />
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
 
-            <TextView
-                android:id="@+id/wTimer"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
-                android:background="@drawable/bg_chip"
-                android:fontFamily="monospace"
-                android:paddingStart="8dp"
-                android:paddingTop="3dp"
-                android:paddingEnd="8dp"
-                android:paddingBottom="3dp"
-                android:text="00:00"
-                android:textColor="#FFFFFF"
-                android:textSize="11sp" />
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/bg_live"
+                    android:paddingStart="9dp"
+                    android:paddingTop="3dp"
+                    android:paddingEnd="9dp"
+                    android:paddingBottom="3dp"
+                    android:text="LIVE"
+                    android:textColor="#FFFFFF"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
 
-            <TextView
-                android:id="@+id/wMeter"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
-                android:background="@drawable/bg_chip"
-                android:fontFamily="monospace"
-                android:paddingStart="8dp"
-                android:paddingTop="3dp"
-                android:paddingEnd="8dp"
-                android:paddingBottom="3dp"
-                android:textColor="@color/fg"
-                android:textSize="11sp" />
+                <TextView
+                    android:id="@+id/wTimer"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:background="@drawable/bg_chip"
+                    android:fontFamily="monospace"
+                    android:paddingStart="8dp"
+                    android:paddingTop="3dp"
+                    android:paddingEnd="8dp"
+                    android:paddingBottom="3dp"
+                    android:text="00:00"
+                    android:textColor="#FFFFFF"
+                    android:textSize="11sp" />
 
-            <Space
-                android:layout_width="0dp"
-                android:layout_height="1dp"
-                android:layout_weight="1" />
+                <TextView
+                    android:id="@+id/wMeter"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:background="@drawable/bg_chip"
+                    android:fontFamily="monospace"
+                    android:paddingStart="8dp"
+                    android:paddingTop="3dp"
+                    android:paddingEnd="8dp"
+                    android:paddingBottom="3dp"
+                    android:textColor="@color/fg"
+                    android:textSize="11sp" />
 
+                <Space
+                    android:layout_width="0dp"
+                    android:layout_height="1dp"
+                    android:layout_weight="1" />
+
+                <!-- consola no canto superior DIREITO (consistente com o broadcast) -->
+                <ImageButton
+                    android:id="@+id/wConsoleBtn"
+                    android:layout_width="34dp"
+                    android:layout_height="34dp"
+                    android:background="@drawable/bg_roundbtn"
+                    android:contentDescription="Console"
+                    android:padding="6dp"
+                    android:scaleType="centerInside"
+                    android:src="@drawable/ic_code" />
+            </LinearLayout>
+
+            <!-- status na 2ª linha, por baixo do LIVE -->
             <TextView
                 android:id="@+id/wStatus"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
                 android:fontFamily="monospace"
                 android:textColor="@color/muted"
                 android:textSize="10sp" />
@@ -878,12 +1034,12 @@
 
         <TextView
             android:id="@+id/wStats"
-            android:layout_width="match_parent"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_gravity="bottom"
+            android:layout_gravity="top|end"
             android:layout_marginStart="12dp"
+            android:layout_marginTop="84dp"
             android:layout_marginEnd="12dp"
-            android:layout_marginBottom="88dp"
             android:background="@drawable/bg_console"
             android:fontFamily="monospace"
             android:padding="10dp"
@@ -909,6 +1065,19 @@
                 android:layout_height="150dp"
                 android:layout_gravity="center" />
         </FrameLayout>
+
+        <!-- fullscreen ACIMA da pausa (canto inferior esquerdo, empilhado) -->
+        <ImageButton
+            android:id="@+id/fsBtn"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_gravity="bottom|start"
+            android:layout_marginStart="16dp"
+            android:layout_marginBottom="76dp"
+            android:background="@drawable/bg_roundbtn"
+            android:contentDescription="Fullscreen"
+            android:scaleType="centerInside"
+            android:src="@drawable/ic_fullscreen" />
 
         <LinearLayout
             android:id="@+id/wControls"
@@ -945,25 +1114,6 @@
                 android:layout_width="0dp"
                 android:layout_height="1dp"
                 android:layout_weight="1" />
-
-            <ImageButton
-                android:id="@+id/wConsoleBtn"
-                android:layout_width="48dp"
-                android:layout_height="48dp"
-                android:background="@drawable/bg_roundbtn"
-                android:contentDescription="Console"
-                android:scaleType="centerInside"
-                android:src="@drawable/ic_code" />
-
-            <ImageButton
-                android:id="@+id/fsBtn"
-                android:layout_width="48dp"
-                android:layout_height="48dp"
-                android:layout_marginStart="10dp"
-                android:background="@drawable/bg_roundbtn"
-                android:contentDescription="Fullscreen"
-                android:scaleType="centerInside"
-                android:src="@drawable/ic_fullscreen" />
 
             <Button
                 android:id="@+id/leaveBtn"
@@ -1025,52 +1175,71 @@
                 android:layout_height="match_parent" />
         </FrameLayout>
 
+        <!-- top bar: linha 1 = CALL/timer + consola à direita; linha 2 = status -->
         <LinearLayout
             android:id="@+id/cTopBar"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:gravity="center_vertical"
-            android:orientation="horizontal"
+            android:orientation="vertical"
             android:padding="12dp">
 
-            <TextView
-                android:layout_width="wrap_content"
+            <LinearLayout
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:background="@drawable/bg_live"
-                android:paddingStart="9dp"
-                android:paddingTop="3dp"
-                android:paddingEnd="9dp"
-                android:paddingBottom="3dp"
-                android:text="CALL"
-                android:textColor="#FFFFFF"
-                android:textSize="11sp"
-                android:textStyle="bold" />
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
 
-            <TextView
-                android:id="@+id/cTimer"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
-                android:background="@drawable/bg_chip"
-                android:fontFamily="monospace"
-                android:paddingStart="8dp"
-                android:paddingTop="3dp"
-                android:paddingEnd="8dp"
-                android:paddingBottom="3dp"
-                android:text="00:00"
-                android:textColor="#FFFFFF"
-                android:textSize="11sp" />
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/bg_live"
+                    android:paddingStart="9dp"
+                    android:paddingTop="3dp"
+                    android:paddingEnd="9dp"
+                    android:paddingBottom="3dp"
+                    android:text="CALL"
+                    android:textColor="#FFFFFF"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
 
-            <Space
-                android:layout_width="0dp"
-                android:layout_height="1dp"
-                android:layout_weight="1" />
+                <TextView
+                    android:id="@+id/cTimer"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:background="@drawable/bg_chip"
+                    android:fontFamily="monospace"
+                    android:paddingStart="8dp"
+                    android:paddingTop="3dp"
+                    android:paddingEnd="8dp"
+                    android:paddingBottom="3dp"
+                    android:text="00:00"
+                    android:textColor="#FFFFFF"
+                    android:textSize="11sp" />
 
+                <Space
+                    android:layout_width="0dp"
+                    android:layout_height="1dp"
+                    android:layout_weight="1" />
+
+                <!-- consola no canto superior DIREITO (consistente com watch/broadcast) -->
+                <ImageButton
+                    android:id="@+id/cConsoleBtn"
+                    android:layout_width="34dp"
+                    android:layout_height="34dp"
+                    android:background="@drawable/bg_roundbtn"
+                    android:contentDescription="Console"
+                    android:padding="6dp"
+                    android:scaleType="centerInside"
+                    android:src="@drawable/ic_code" />
+            </LinearLayout>
+
+            <!-- status na 2ª linha, por baixo do CALL -->
             <TextView
                 android:id="@+id/cStatus"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginEnd="8dp"
+                android:layout_marginTop="6dp"
                 android:fontFamily="monospace"
                 android:textColor="@color/muted"
                 android:textSize="10sp" />
@@ -1078,12 +1247,12 @@
 
         <TextView
             android:id="@+id/cStats"
-            android:layout_width="match_parent"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_gravity="bottom"
+            android:layout_gravity="top|end"
             android:layout_marginStart="12dp"
+            android:layout_marginTop="84dp"
             android:layout_marginEnd="12dp"
-            android:layout_marginBottom="88dp"
             android:background="@drawable/bg_console"
             android:fontFamily="monospace"
             android:padding="10dp"
@@ -1132,16 +1301,6 @@
                 android:scaleType="centerInside"
                 android:src="@drawable/ic_screen" />
 
-            <ImageButton
-                android:id="@+id/cConsoleBtn"
-                android:layout_width="48dp"
-                android:layout_height="48dp"
-                android:layout_marginStart="10dp"
-                android:background="@drawable/bg_roundbtn"
-                android:contentDescription="Console"
-                android:scaleType="centerInside"
-                android:src="@drawable/ic_code" />
-
             <Space
                 android:layout_width="0dp"
                 android:layout_height="1dp"
@@ -1161,5 +1320,269 @@
                 android:textColor="#FFFFFF"
                 android:textStyle="bold" />
         </LinearLayout>
+    </FrameLayout>
+
+    <!-- ======================= MEETING (beta) ======================= -->
+    <FrameLayout
+        android:id="@+id/pageMeet"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#000000"
+        android:visibility="gone">
+
+        <!-- grelha de tiles: local (fixo) + remotos (dinâmicos, 1 por slot) -->
+        <ScrollView
+            android:id="@+id/meetScroll"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:layout_marginTop="96dp"
+            android:layout_marginBottom="88dp"
+            android:fillViewport="true">
+
+            <GridLayout
+                android:id="@+id/meetGrid"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:columnCount="2"
+                android:padding="8dp">
+
+                <FrameLayout
+                    android:id="@+id/meetLocalTile"
+                    android:layout_width="0dp"
+                    android:layout_height="150dp"
+                    android:layout_columnWeight="1"
+                    android:layout_margin="4dp"
+                    android:background="@drawable/bg_card">
+
+                    <!-- aspect fiel: a surface vive num AspectFrameLayout (letterbox) -->
+                    <com.livepoc.android.AspectFrameLayout
+                        android:id="@+id/meetLocalAspect"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:layout_gravity="center">
+
+                        <SurfaceView
+                            android:id="@+id/meetLocalSurface"
+                            android:layout_width="match_parent"
+                            android:layout_height="match_parent" />
+                    </com.livepoc.android.AspectFrameLayout>
+
+                    <!-- placeholder de câmara desligada -->
+                    <ImageView
+                        android:id="@+id/meetLocalPh"
+                        android:layout_width="44dp"
+                        android:layout_height="44dp"
+                        android:layout_gravity="center"
+                        android:alpha="0.7"
+                        android:contentDescription="Camera off"
+                        android:src="@drawable/ic_cam_off"
+                        android:visibility="gone" />
+
+                    <TextView
+                        android:id="@+id/meetLocalLab"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_gravity="bottom|start"
+                        android:layout_margin="6dp"
+                        android:background="@drawable/bg_chip"
+                        android:fontFamily="monospace"
+                        android:paddingStart="6dp"
+                        android:paddingTop="2dp"
+                        android:paddingEnd="6dp"
+                        android:paddingBottom="2dp"
+                        android:text="you"
+                        android:textColor="#FFFFFF"
+                        android:textSize="10sp" />
+                </FrameLayout>
+            </GridLayout>
+        </ScrollView>
+
+        <!-- FULLSCREEN de um participante (2º toque no tile): a surface do
+             viewer é re-encaminhada para aqui; toque = volta à grelha -->
+        <FrameLayout
+            android:id="@+id/meetFsBox"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="#000000"
+            android:visibility="gone">
+
+            <com.livepoc.android.AspectFrameLayout
+                android:id="@+id/meetFsAspect"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:layout_gravity="center">
+
+                <SurfaceView
+                    android:id="@+id/meetFsSurface"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent" />
+            </com.livepoc.android.AspectFrameLayout>
+        </FrameLayout>
+
+        <!-- top bar: linha 1 = MEET/timer + consola à direita; linha 2 = status -->
+        <LinearLayout
+            android:id="@+id/meetTopBar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="12dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/bg_live"
+                    android:paddingStart="9dp"
+                    android:paddingTop="3dp"
+                    android:paddingEnd="9dp"
+                    android:paddingBottom="3dp"
+                    android:text="MEET"
+                    android:textColor="#FFFFFF"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/meetTimer"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:background="@drawable/bg_chip"
+                    android:fontFamily="monospace"
+                    android:paddingStart="8dp"
+                    android:paddingTop="3dp"
+                    android:paddingEnd="8dp"
+                    android:paddingBottom="3dp"
+                    android:text="00:00"
+                    android:textColor="#FFFFFF"
+                    android:textSize="11sp" />
+
+                <Space
+                    android:layout_width="0dp"
+                    android:layout_height="1dp"
+                    android:layout_weight="1" />
+
+                <ImageButton
+                    android:id="@+id/meetConsoleBtn"
+                    android:layout_width="34dp"
+                    android:layout_height="34dp"
+                    android:background="@drawable/bg_roundbtn"
+                    android:contentDescription="Console"
+                    android:padding="6dp"
+                    android:scaleType="centerInside"
+                    android:src="@drawable/ic_code" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/meetStatus"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:fontFamily="monospace"
+                android:textColor="@color/muted"
+                android:textSize="10sp" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/meetStats"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|end"
+            android:layout_marginStart="12dp"
+            android:layout_marginTop="84dp"
+            android:layout_marginEnd="12dp"
+            android:background="@drawable/bg_console"
+            android:fontFamily="monospace"
+            android:padding="10dp"
+            android:textColor="@color/stats"
+            android:textSize="10sp"
+            android:visibility="gone" />
+
+        <!-- rail vertical à esquerda (consistente com broadcast/watch):
+             cima→baixo = ecrã, câmara on/off, flip, mic -->
+        <LinearLayout
+            android:id="@+id/meetControls"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|start"
+            android:orientation="vertical"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
+            android:paddingBottom="16dp">
+
+            <ImageButton
+                android:id="@+id/meetScreenBtn"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="@drawable/bg_roundbtn"
+                android:contentDescription="Share screen"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_screen" />
+
+            <ImageButton
+                android:id="@+id/meetCamBtn"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginTop="10dp"
+                android:background="@drawable/bg_roundbtn"
+                android:contentDescription="Camera on/off"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_cam" />
+
+            <ImageButton
+                android:id="@+id/meetFlipBtn"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginTop="10dp"
+                android:background="@drawable/bg_roundbtn"
+                android:contentDescription="Switch camera"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_flip" />
+
+            <ImageButton
+                android:id="@+id/meetMicBtn"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginTop="10dp"
+                android:background="@drawable/bg_roundbtn"
+                android:contentDescription="Mute microphone"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_mic" />
+
+            <!-- enquadramento dos vídeos: FIT (letterbox) ↔ FILL (corta) -->
+            <TextView
+                android:id="@+id/meetFitBtn"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginTop="10dp"
+                android:background="@drawable/bg_roundbtn"
+                android:gravity="center"
+                android:text="FIT"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <!-- Leave: pill flutuante no canto inferior direito (como o End) -->
+        <Button
+            android:id="@+id/meetLeaveBtn"
+            android:layout_width="wrap_content"
+            android:layout_height="48dp"
+            android:layout_gravity="bottom|end"
+            android:layout_marginEnd="16dp"
+            android:layout_marginBottom="16dp"
+            android:background="@drawable/bg_stop"
+            android:minWidth="0dp"
+            android:minHeight="0dp"
+            android:paddingStart="28dp"
+            android:paddingEnd="28dp"
+            android:text="Leave"
+            android:textAllCaps="false"
+            android:textColor="#FFFFFF"
+            android:textStyle="bold" />
     </FrameLayout>
 </FrameLayout>
