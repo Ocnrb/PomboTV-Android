@@ -14,6 +14,8 @@
 // um só conjunto de operadores cobre tudo (validado E2E 2026-07-16).
 const OWNER = '0x75fc31876b8cd9af59a0e882d87dd8468c2d0e35';
 const STREAM = OWNER + '/video';
+// kinds do live (video/audio) + kinds de CHAMADA definidos por bridgeCallStart:
+// cv/ca = o que EU publico (call video/audio), rv/ra = o que recebo do par.
 const PARTS = { video: 0, audio: 1 };
 function sdef(kind) { return { streamId: STREAM, partition: PARTS[kind] }; }
 
@@ -30,18 +32,62 @@ const proxyNodes = { video: null, audio: null };     // por stream (sponsorships
 const proxySet = { videoSub: false, videoPub: false, audioSub: false, audioPub: false };
 // Nº de proxies configurável a partir das definições nativas (0 = forçar malha).
 let proxyCountPub = 2, proxyCountSub = 2;
+// MODOS de rede (definições nativas):
+// meshStart — subscreve JÁ em malha e promove a proxy quando a descoberta acabar
+// proxyOnly — malha COMPLETAMENTE proibida: sem join de malha, sem fallbacks;
+//             publishes sem proxy ativo são DESCARTADOS (um publish sem proxy
+//             entraria na malha automaticamente) e subscribes esperam operadores.
+let meshStart = false, proxyOnly = false;
+function bridgeSetModes(mesh, pOnly) {
+  proxyOnly = !!pOnly;
+  meshStart = !!mesh && !proxyOnly; // proxy-only anula o fast start
+  if (proxyOnly) { proxyCountPub = Math.max(1, proxyCountPub); proxyCountSub = Math.max(1, proxyCountSub); }
+  console.log('bridge: modes meshStart=' + meshStart + ' proxyOnly=' + proxyOnly);
+}
 function bridgeSetProxyCounts(pub, sub) {
   proxyCountPub = Math.max(0, Math.min(3, pub | 0));
   proxyCountSub = Math.max(0, Math.min(3, sub | 0));
+  if (proxyOnly) { proxyCountPub = Math.max(1, proxyCountPub); proxyCountSub = Math.max(1, proxyCountSub); }
   console.log('bridge: proxy counts pub=' + proxyCountPub + ' sub=' + proxyCountSub);
 }
 
+// SAÚDE dos proxies: operadores mortos na sponsorship (unstake/offline) deixam
+// o setProxies a queimar ~10s em timeouts. Sonda WebSocket curta a cada
+// candidato e usa só os vivos — arranque rápido e sem caminhos mortos.
+function wsUrlOf(pd) {
+  const w = pd && pd.websocket;
+  if (!w || !w.host) return null;
+  return (w.tls === false ? 'ws' : 'wss') + '://' + w.host + ':' + w.port;
+}
+function probeWs(url, ms) {
+  return new Promise(function (res) {
+    let done = false, ws = null;
+    const fin = function (ok) { if (!done) { done = true; try { ws && ws.close(); } catch (e) {} res(ok); } };
+    setTimeout(function () { fin(false); }, ms);
+    try { ws = new WebSocket(url); } catch (e) { return fin(false); }
+    ws.onopen = function () { fin(true); };
+    ws.onerror = function () { fin(false); };
+  });
+}
+async function pruneDeadProxies(nodes, label) {
+  if (!nodes || nodes.length <= 0) return nodes;
+  const alive = await Promise.all(nodes.map(function (n) {
+    const u = wsUrlOf(n);
+    return u ? probeWs(u, 2500) : Promise.resolve(true); // sem WS anunciado → benefício da dúvida
+  }));
+  const ok = nodes.filter(function (n, i) { return alive[i]; });
+  if (ok.length < nodes.length) console.log('bridge: proxies mortos ignorados (' + label + '): ' + (nodes.length - ok.length) + '/' + nodes.length);
+  return ok.length ? ok : nodes; // todos a falhar = sonda inconclusiva → manter
+}
 async function discoverProxies(kind) {
   const maxWant = Math.max(proxyCountPub, proxyCountSub);
   if (maxWant <= 0) return null; // proxies desativados nas definições
   let lastErr = null;
   for (let want = Math.min(maxWant, 3); want >= 1; want--) { // findProxyNodes lança erro se achar menos do que o pedido
-    try { return await client.findProxyNodes(sdef(kind), want); }
+    try {
+      const nodes = await client.findProxyNodes(sdef(kind), want);
+      return await pruneDeadProxies(nodes, kind);
+    }
     catch (e) { lastErr = e; }
   }
   console.log('bridge: sem proxies para ' + kind + ' — malha (' + (lastErr && lastErr.message || '') + ')');
@@ -62,6 +108,16 @@ async function discoverAllProxies() {
 
 let client = null;
 let proxyDiscovery = Promise.resolve();
+// setProxies SERIALIZADO: chamadas concorrentes (arranque de chamada = 4+
+// partições) contendiam no DHT/ligações e deixavam um caminho morto — visto
+// ao vivo: ra a demorar minutos, rv a nunca entregar.
+let spChain = Promise.resolve();
+function setProxiesSerial(def, nodes, dir, n) {
+  const run = function () { return client.setProxies(def, nodes, dir, n); };
+  const p = spChain.then(run, run);
+  spChain = p.catch(function () {});
+  return p;
+}
 const subs = {};          // forwarding subscriptions (viewer)
 const joins = {};         // silent subscriptions (broadcaster overlay participation)
 const chains = { video: Promise.resolve(), audio: Promise.resolve() };
@@ -121,9 +177,26 @@ let jsPub = 0, jsAcked = 0;
 // Progresso POR KIND: acks saudáveis de vídeo não podem esconder um caminho de
 // áudio morto (visto ao vivo com proxies de áudio caídos).
 const jsAckAt = { video: 0, audio: 0 }, jsTryAt = { video: 0, audio: 0 };
+let poDropWarnAt = 0;
+const txCount = {}; // diagnóstico: nº de publishes por kind (linha rx de 5s)
+const txFail = {};  // e falhas por kind (client.publish rejeitado)
 function bridgePublish(kind, b64) {
+  txCount[kind] = (txCount[kind] || 0) + 1;
   const bytes = b64ToU8(b64);
   if (!client) { try { Native.acked(kind, bytes.length); } catch (e) {} return; }
+  // PROXY-ONLY: publicar sem proxy ativo entraria na MALHA — descartar até o
+  // watchdog de TX conseguir promover (ack para o inFlight não crescer).
+  if (proxyOnly && !proxySet[kind + 'Pub']) {
+    jsTryAt[kind] = Date.now(); // arma o watchdog de TX (redescoberta/promoção)
+    try { Native.acked(kind, bytes.length); } catch (e) {}
+    const now = Date.now();
+    if (now - poDropWarnAt > 5000) {
+      poDropWarnAt = now;
+      console.log('bridge: proxy-only sem proxies de ' + kind + ' → publish descartado');
+      try { Native.status('proxy-only: waiting for operators…'); } catch (e) {}
+    }
+    return;
+  }
   jsPub++;
   if (!jsTryAt[kind]) jsAckAt[kind] = Date.now(); // 1º publish semeia o relógio de acks
   jsTryAt[kind] = Date.now();
@@ -131,7 +204,12 @@ function bridgePublish(kind, b64) {
     .then(() => client.publish(sdef(kind), bytes, { contentType: 'binary' }))
     .then(
       () => { jsAcked++; jsAckAt[kind] = Date.now(); try { Native.acked(kind, bytes.length); } catch (e) {} },
-      () => { try { Native.acked(kind, bytes.length); } catch (e) {} }
+      (e) => {
+        txFail[kind] = (txFail[kind] || 0) + 1;
+        if (txFail[kind] === 1 || txFail[kind] % 100 === 0)
+          console.log('bridge: publish ' + kind + ' FALHOU ×' + txFail[kind] + ': ' + (e && e.message || e));
+        try { Native.acked(kind, bytes.length); } catch (x) {}
+      }
     );
 }
 
@@ -139,6 +217,9 @@ function bridgePublish(kind, b64) {
 const rx = { video: 0, audio: 0, videoBytes: 0, audioBytes: 0 };
 setInterval(() => {
   console.log('bridge rx: video=' + rx.video + ' (' + Math.round(rx.videoBytes / 1024) + 'KB) audio=' + rx.audio + ' (' + Math.round(rx.audioBytes / 1024) + 'KB)' +
+    ' rv=' + (rx.rv || 0) + ' ra=' + (rx.ra || 0) +
+    ' tx=[' + Object.keys(txCount).map(k => k + ':' + txCount[k]).join(',') + ']' +
+    ' txFail=[' + Object.keys(txFail).map(k => k + ':' + txFail[k]).join(',') + ']' +
     ' subs=[' + Object.keys(subs).join(',') + '] joins=[' + Object.keys(joins).join(',') + ']');
 }, 5000);
 
@@ -206,17 +287,18 @@ async function subscribeWithRetry(def, handler, label) {
 // Armado quando: esse kind JÁ recebeu e parou 12s, OU nunca recebeu mas o
 // OUTRO kind flui (prova de que a emissão está viva). Na recuperação a lista
 // de operadores é RODADA — experimentar outros quando uns estão mortos.
-const wdAt = { video: Date.now(), audio: Date.now() };
-const wdCount = { video: 0, audio: 0 };
+const WD_KINDS = ['video', 'audio', 'rv', 'ra']; // inclui a receção da CHAMADA
+const wdAt = { video: Date.now(), audio: Date.now(), rv: Date.now(), ra: Date.now() };
+const wdCount = { video: 0, audio: 0, rv: 0, ra: 0 };
 setInterval(async () => {
   const now = Date.now();
-  for (const k of ['video', 'audio']) {
-    if (rx[k] !== wdCount[k]) { wdCount[k] = rx[k]; wdAt[k] = now; }
+  for (const k of WD_KINDS) {
+    if ((rx[k] || 0) !== wdCount[k]) { wdCount[k] = rx[k] || 0; wdAt[k] = now; }
     if (!subs[k]) wdAt[k] = now; // não subscrito → não armado
   }
   if (subsInFlight > 0 || wdRecovering) return;
-  const anyFlow = (now - wdAt.video < 6000) || (now - wdAt.audio < 6000);
-  const stalled = ['video', 'audio'].filter(k =>
+  const anyFlow = WD_KINDS.some(k => now - wdAt[k] < 6000);
+  const stalled = WD_KINDS.filter(k =>
     subs[k] && now - wdAt[k] > 12000 && (wdCount[k] > 0 || anyFlow));
   if (!stalled.length) { wdFails = 0; return; }
   wdRecovering = true;
@@ -230,13 +312,23 @@ setInterval(async () => {
         if (s) { try { await s.unsubscribe(); } catch (e) {} }
       }
       if (USE_PROXY) await discoverAllProxies();
+      // kinds de chamada: refrescar a lista a partir dos operadores do stream
+      for (const k of ['rv', 'ra']) if (stalled.includes(k))
+        proxyNodes[k] = proxyNodes.video || proxyNodes.audio || proxyNodes[k];
       const PD = (SDK && SDK.ProxyDirection) ? SDK.ProxyDirection : { PUBLISH: 0, SUBSCRIBE: 1 };
       for (const kind of stalled) {
         const nodes = proxyNodes[kind];
         if (nodes && nodes.length > 1) nodes.push(nodes.shift()); // rodar operadores
         if (proxySet[kind + 'Sub'] && (!nodes || !nodes.length)) {
+          if (proxyOnly) {
+            // sem malha: re-subscreve por cima do proxy morto (o nó continua em
+            // modo proxy — zero malha) e volta a tentar na próxima ronda
+            await bridgeSubscribe(kind);
+            wdAt[kind] = Date.now();
+            continue;
+          }
           // Operadores desapareceram → limpar config (lista vazia) = voltar à MALHA
-          try { await client.setProxies(sdef(kind), [], PD.SUBSCRIBE); } catch (e) {}
+          try { await setProxiesSerial(sdef(kind), [], PD.SUBSCRIBE); } catch (e) {}
           console.log('bridge: proxies de ' + kind + ' desapareceram → malha');
         }
         proxySet[kind + 'Sub'] = false;
@@ -253,6 +345,7 @@ setInterval(async () => {
     wdRecovering = false;
   }
   if (wdFails >= 2) {
+    if (proxyOnly) { wdFails = 0; return; } // sem operadores não há nada a renascer — re-tenta
     // O mundo JS está podre (cliente irrecuperável) → pedir ao nativo um
     // renascimento completo da página (bridge.reconnect + resubscrição).
     wdFails = 0;
@@ -269,8 +362,9 @@ let wdbRecovering = false, wdbFails = 0;
 setInterval(async () => {
   if (wdbRecovering) return;
   const now = Date.now();
-  // por kind: publiquei há <30s mas não há ack desse kind há 15s → caminho morto
-  const stalled = ['video', 'audio'].filter(k =>
+  // por kind (inclui publicação da CHAMADA cv/ca): publiquei há <30s mas não
+  // há ack desse kind há 15s → caminho morto
+  const stalled = ['video', 'audio', 'cv', 'ca'].filter(k =>
     jsTryAt[k] > 0 && now - jsTryAt[k] < 30000 && now - jsAckAt[k] > 15000);
   if (!stalled.length) { wdbFails = 0; return; }
   wdbRecovering = true;
@@ -280,19 +374,25 @@ setInterval(async () => {
       if (USE_PROXY) await discoverAllProxies();
       const PD = (SDK && SDK.ProxyDirection) ? SDK.ProxyDirection : { PUBLISH: 0, SUBSCRIBE: 1 };
       for (const kind of stalled) {
-        if (!proxySet[kind + 'Pub']) continue;
+        // proxy-only: mesmo sem proxy aplicado ainda (gate a descartar publishes),
+        // este watchdog é o caminho de promoção quando os operadores voltam
+        if (!proxySet[kind + 'Pub'] && !proxyOnly) continue;
         const nodes = proxyNodes[kind];
         if (proxyCountPub > 0 && nodes && nodes.length) {
           const use = nodes.slice(0, proxyCountPub);
-          await client.setProxies(sdef(kind), use, PD.PUBLISH, use.length);
+          await setProxiesSerial(sdef(kind), use, PD.PUBLISH, use.length);
+          proxySet[kind + 'Pub'] = true;
           console.log('bridge: proxy-PUBLISH ' + kind + ' renovado (' + use.length + ')');
-        } else {
-          try { await client.setProxies(sdef(kind), [], PD.PUBLISH); } catch (e) {}
+        } else if (!proxyOnly && kind !== 'cv' && kind !== 'ca') {
+          // (kinds de chamada nunca fazem mesh-join da própria partição —
+          // mantêm proxies e re-tentam na ronda seguinte)
+          try { await setProxiesSerial(sdef(kind), [], PD.PUBLISH); } catch (e) {}
           proxySet[kind + 'Pub'] = false;
           delete joins[kind];
           await bridgeJoin(kind); // volta a participar na malha desse stream
           console.log('bridge: proxies de ' + kind + ' desapareceram → publish em malha');
         }
+        // (proxy-only sem nós vivos: mantém-se o gate a descartar — sem malha)
         jsAckAt[kind] = Date.now(); // dar tempo ao caminho novo antes de re-disparar
       }
     })(), 20000);
@@ -303,7 +403,7 @@ setInterval(async () => {
   } finally {
     wdbRecovering = false;
   }
-  if (wdbFails >= 2) { wdbFails = 0; try { Native.needReload(); } catch (e) {} }
+  if (wdbFails >= 2) { wdbFails = 0; if (!proxyOnly) { try { Native.needReload(); } catch (e) {} } }
 }, 5000);
 
 // PROMOTOR: garante que HAVENDO proxies, são eles a ser usados e não a malha
@@ -320,7 +420,7 @@ setInterval(async () => {
         if (nodes && nodes.length) {
           proxyNodes[kind] = nodes;
           const use = nodes.slice(0, proxyCountSub);
-          await client.setProxies(sdef(kind), use, PD.SUBSCRIBE, use.length);
+          await setProxiesSerial(sdef(kind), use, PD.SUBSCRIBE, use.length);
           proxySet[kind + 'Sub'] = true;
           console.log('bridge: promovido a proxy-SUBSCRIBE ' + kind);
         }
@@ -333,7 +433,7 @@ setInterval(async () => {
           const s = joins[kind]; delete joins[kind];
           if (s) { try { await s.unsubscribe(); } catch (e) {} }
           const use = nodes.slice(0, proxyCountPub);
-          await client.setProxies(sdef(kind), use, PD.PUBLISH, use.length);
+          await setProxiesSerial(sdef(kind), use, PD.PUBLISH, use.length);
           proxySet[kind + 'Pub'] = true;
           console.log('bridge: promovido a proxy-PUBLISH ' + kind);
         }
@@ -349,6 +449,23 @@ setInterval(async () => {
 // overlay num subscribe frio demora mais que a janela da sonda).
 let monitorSub = null, lastLiveMs = 0, liveNow = false, monMsgs = 0;
 let monitorBusy = Promise.resolve(); // teardown do monitor em curso
+// HANDOVER monitor↔sessão: o Watch herda a subscrição de áudio viva do monitor
+// (mesma partição, mesmo proxy) em vez de a destruir e recriar — poupa ~7s de
+// unsubscribe+resubscribe no arranque. audioForward liga o encaminhamento para
+// o nativo; o sinal de live (lastLiveMs) é atualizado SEMPRE, para o sub poder
+// voltar a ser o monitor quando a sessão acaba.
+let audioForward = false;
+function deliverNative(kind, content) {
+  const u8 = asU8(content);
+  if (u8) {
+    rx[kind]++; rx[kind + 'Bytes'] += u8.length;
+    try { Native.message(kind, u8ToB64(u8)); } catch (e) {}
+  }
+}
+function onAudioContent(content) {
+  monMsgs++; lastLiveMs = Date.now();
+  if (audioForward) deliverNative('audio', content);
+}
 function setLive(v) {
   if (v !== liveNow) {
     liveNow = v;
@@ -375,14 +492,27 @@ async function bridgeMonitorStart() {
     if (proxyCountSub > 0 && nodes && nodes.length && !proxySet['audioSub']) {
       const dir = (SDK && SDK.ProxyDirection) ? SDK.ProxyDirection.SUBSCRIBE : 1;
       const use = nodes.slice(0, proxyCountSub);
-      await withTimeout(client.setProxies(sdef('audio'), use, dir, use.length), 15000);
+      await withTimeout(setProxiesSerial(sdef('audio'), use, dir, use.length), 15000);
       proxySet['audioSub'] = true;
       console.log('monitor: proxy-SUBSCRIBE audio (' + use.length + ')');
     }
   } catch (e) { console.log('monitor: setProxies falhou (' + (e && e.message || e) + ') → malha'); }
+  // proxy-only: sem proxy de áudio o monitor NÃO subscreve (seria malha) —
+  // badge fica inativo e re-tenta em 30s
+  if (proxyOnly && !proxySet['audioSub']) {
+    console.log('monitor: proxy-only sem operadores → retry 30s');
+    setTimeout(function () { bridgeMonitorStart(); }, 30000);
+    return;
+  }
   try {
-    monitorSub = await subscribeWithRetry(sdef('audio'),
-      () => { monMsgs++; lastLiveMs = Date.now(); }, 'monitor');
+    monitorSub = await subscribeWithRetry(sdef('audio'), onAudioContent, 'monitor');
+    // corrida: uma sessão arrancou enquanto este subscribe estava em voo —
+    // não pode haver duas subscrições no mesmo stream-part (entregas 2×)
+    if (subs.audio || joins.audio) {
+      const s = monitorSub; monitorSub = null;
+      if (s) { try { await s.unsubscribe(); } catch (e) {} }
+      return;
+    }
     console.log('monitor: subscribed (audio)');
   } catch (e) {
     monitorSub = null;
@@ -401,40 +531,91 @@ async function bridgeMonitorStop() {
 setInterval(() => { if (monitorSub) setLive(Date.now() - lastLiveMs < 4000); }, 1000);
 
 let subsInFlight = 0; // o watchdog não pode re-subscrever com isto >0 (subs duplicados)
+// desejo do nativo por kind (subscribe pedido e ainda não cancelado) — usado
+// pelos retries do modo proxy-only
+const wanted = { video: false, audio: false };
+async function poRetrySubscribe(kind) {
+  if (!wanted[kind] || subs[kind] || !client) return;
+  proxyDiscovery = (async function () { if (USE_PROXY) await discoverAllProxies(); })().catch(function () {});
+  try { await withTimeout(proxyDiscovery, 15000); } catch (e) {}
+  if (!wanted[kind] || subs[kind]) return;
+  bridgeSubscribe(kind);
+}
 async function bridgeSubscribe(kind) {
   if (!client || subs[kind]) return;
+  wanted[kind] = true;
+  // HANDOVER: o monitor já tem a subscrição de áudio viva (mesma partição,
+  // mesmo proxy) — a sessão herda-a e liga o encaminhamento. Arranque ~0s.
+  if (kind === 'audio' && monitorSub) {
+    subs.audio = monitorSub; monitorSub = null;
+    audioForward = true;
+    console.log('bridge: audio handover monitor→sessão');
+    return;
+  }
   console.log('bridge: subscribe ' + kind + ' start');
   subsInFlight++;
   try {
-  try { await withTimeout(monitorBusy, 8000); } catch (e) {}
-  try { await withTimeout(proxyDiscovery, 10000); } catch (e) {}
+  // Só o ÁUDIO partilha o stream-part com o monitor — o vídeo não precisa de
+  // esperar por um teardown do monitor em curso (era ~7s mortos no arranque).
+  if (kind === 'audio') { try { await withTimeout(monitorBusy, 8000); } catch (e) {} }
+  // fast start: não esperar pela descoberta — subscreve em malha e promove
+  if (!meshStart) { try { await withTimeout(proxyDiscovery, 10000); } catch (e) {} }
   if (subs[kind]) return; // corrida: outra chamada completou durante a espera
   try {
     // Viewer em modo proxy: o stream chega por WebSocket via operadores (sem
     // WebRTC/TURN) — por stream, conforme a sponsorship respetiva.
     const nodes = proxyNodes[kind];
-    if (proxyCountSub > 0 && nodes && nodes.length && !proxySet[kind + 'Sub']) {
+    if (!meshStart && proxyCountSub > 0 && nodes && nodes.length && !proxySet[kind + 'Sub']) {
       try {
         const dir = (SDK && SDK.ProxyDirection) ? SDK.ProxyDirection.SUBSCRIBE : 1;
         const use = nodes.slice(0, proxyCountSub);
-        await withTimeout(client.setProxies(sdef(kind), use, dir, use.length), 15000); // pode pendurar (WebView + DHT pesada)
+        await withTimeout(setProxiesSerial(sdef(kind), use, dir, use.length), 15000); // pode pendurar (WebView + DHT pesada)
         proxySet[kind + 'Sub'] = true;
         console.log('bridge: proxy-SUBSCRIBE ' + kind + ' ativo (' + use.length + ')');
-      } catch (e) { console.log('bridge: setProxies ' + kind + ' falhou (' + (e && e.message || e) + ') → malha'); }
+      } catch (e) { console.log('bridge: setProxies ' + kind + ' falhou (' + (e && e.message || e) + ')'); }
     }
-    subs[kind] = await subscribeWithRetry(sdef(kind), (content) => {
-      const u8 = asU8(content);
-      if (u8) {
-        rx[kind]++; rx[kind + 'Bytes'] += u8.length;
-        try { Native.message(kind, u8ToB64(u8)); } catch (e) {}
-      }
-    }, kind);
+    // PROXY-ONLY: sem proxy ativo não há subscribe (seria malha) — re-tenta
+    if (proxyOnly && !proxySet[kind + 'Sub']) {
+      console.log('bridge: proxy-only sem proxies de ' + kind + ' → retry 5s');
+      try { Native.status('proxy-only: waiting for operators…'); } catch (e) {}
+      setTimeout(function () { poRetrySubscribe(kind); }, 5000);
+      return;
+    }
+    if (kind === 'audio') {
+      audioForward = true;
+      subs.audio = await subscribeWithRetry(sdef('audio'), onAudioContent, 'audio');
+    } else {
+      subs[kind] = await subscribeWithRetry(sdef(kind), (content) => deliverNative(kind, content), kind);
+    }
     console.log('bridge: subscribed ' + kind);
+    // fast start: promoção a proxy em background (o promotor periódico é backup)
+    if (meshStart && proxyCountSub > 0 && !proxySet[kind + 'Sub']) {
+      (async function () {
+        try {
+          await withTimeout(proxyDiscovery, 15000);
+          const n2 = proxyNodes[kind];
+          if (n2 && n2.length && !proxySet[kind + 'Sub'] && subs[kind]) {
+            const dir = (SDK && SDK.ProxyDirection) ? SDK.ProxyDirection.SUBSCRIBE : 1;
+            const use = n2.slice(0, proxyCountSub);
+            await withTimeout(setProxiesSerial(sdef(kind), use, dir, use.length), 15000);
+            proxySet[kind + 'Sub'] = true;
+            console.log('bridge: fast start → promovido a proxy-SUBSCRIBE ' + kind);
+          }
+        } catch (e) { console.log('bridge: fast start promoção adiada (' + (e && e.message || e) + ')'); }
+      })();
+    }
   } catch (e) { Native.error('subscribe ' + kind + ': ' + (e && e.message || e)); }
   } finally { subsInFlight--; }
 }
 async function bridgeUnsubscribe(kind) {
+  wanted[kind] = false; // trava os retries do modo proxy-only
   const s = subs[kind]; delete subs[kind];
+  if (kind === 'audio') {
+    audioForward = false;
+    // HANDBACK: em vez de destruir a subscrição, devolvê-la ao monitor — o
+    // badge de live volta a funcionar já e o próximo Watch herda-a de novo.
+    if (s && !monitorSub) { monitorSub = s; return; }
+  }
   if (s) { try { await s.unsubscribe(); } catch (e) {} }
 }
 
@@ -454,12 +635,19 @@ async function bridgeJoin(kind) {
       try {
         const dir = (SDK && SDK.ProxyDirection) ? SDK.ProxyDirection.PUBLISH : 0;
         const use = nodes.slice(0, proxyCountPub);
-        await withTimeout(client.setProxies(sdef(kind), use, dir, use.length), 15000); // pode pendurar (WebView + DHT pesada)
+        await withTimeout(setProxiesSerial(sdef(kind), use, dir, use.length), 15000); // pode pendurar (WebView + DHT pesada)
         proxySet[kind + 'Pub'] = true;
         console.log('bridge: proxy-PUBLISH ' + kind + ' ativo (' + use.length + ')');
       } catch (e) { console.log('bridge: proxy-PUBLISH ' + kind + ' falhou: ' + (e && e.message || e)); }
     }
     return; // em proxy mode não se junta à malha desse stream
+  }
+  // PROXY-ONLY: sem operadores NÃO há join de malha — o gate do bridgePublish
+  // descarta os payloads e o watchdog de TX fica a redescobrir/promover.
+  if (proxyOnly) {
+    console.log('bridge: proxy-only sem proxies de ' + kind + ' — publish em espera de operadores');
+    try { Native.status('proxy-only: waiting for operators…'); } catch (e) {}
+    return;
   }
   try { joins[kind] = await subscribeWithRetry(sdef(kind), () => {}, 'join-' + kind); }
   catch (e) {}
@@ -467,6 +655,51 @@ async function bridgeJoin(kind) {
 async function bridgeLeave(kind) {
   const s = joins[kind]; delete joins[kind];
   if (s) { try { await s.unsubscribe(); } catch (e) {} }
+}
+
+// ================= CALL 1:1 (multi-partição, mesmo stream) =================
+// Host publica em #2(vid)/#3(aud) e subscreve #4/#5; Guest o inverso. Depois
+// do bridgeCallStart, os kinds cv/ca/rv/ra funcionam nos caminhos GENÉRICOS
+// (bridgePublish/bridgeSubscribe) — herdam modos, gates de proxy-only e retries.
+const CALL_PARTS = { host: { pubV: 2, pubA: 3, subV: 4, subA: 5 }, guest: { pubV: 4, pubA: 5, subV: 2, subA: 3 } };
+async function bridgeCallStart(role) {
+  const P = CALL_PARTS[role] || CALL_PARTS.host;
+  PARTS.cv = P.pubV; PARTS.ca = P.pubA; PARTS.rv = P.subV; PARTS.ra = P.subA;
+  for (const k of ['cv', 'ca', 'rv', 'ra']) {
+    rx[k] = 0; rx[k + 'Bytes'] = 0;
+    jsAckAt[k] = 0; jsTryAt[k] = 0;
+    chains[k] = Promise.resolve();
+    wanted[k] = false;
+    delete proxySet[k + 'Pub']; delete proxySet[k + 'Sub'];
+  }
+  console.log('bridge: call start role=' + role + ' pub=#' + PARTS.cv + '/#' + PARTS.ca + ' sub=#' + PARTS.rv + '/#' + PARTS.ra);
+  if (!meshStart) { try { await withTimeout(proxyDiscovery, 10000); } catch (e) {} }
+  // operadores staked servem TODAS as partições — reutilizar os do live
+  for (const k of ['cv', 'ca', 'rv', 'ra'])
+    if (!proxyNodes[k]) proxyNodes[k] = proxyNodes.video || proxyNodes.audio || null;
+  // proxies de PUBLISH das partições próprias (subscribe é o bridgeSubscribe genérico)
+  const PD = (SDK && SDK.ProxyDirection) ? SDK.ProxyDirection : { PUBLISH: 0, SUBSCRIBE: 1 };
+  for (const k of ['cv', 'ca']) {
+    const nodes = proxyNodes[k];
+    if (proxyCountPub > 0 && nodes && nodes.length) {
+      try {
+        const use = nodes.slice(0, proxyCountPub);
+        await withTimeout(setProxiesSerial(sdef(k), use, PD.PUBLISH, use.length), 15000);
+        proxySet[k + 'Pub'] = true;
+        console.log('bridge: call proxy-PUBLISH ' + k + ' ativo (#' + PARTS[k] + ')');
+      } catch (e) { console.log('bridge: call proxy-PUBLISH ' + k + ' falhou: ' + (e && e.message || e)); }
+    }
+  }
+  if (proxyOnly && (!proxySet['cvPub'] || !proxySet['caPub']))
+    try { Native.status('proxy-only: waiting for operators…'); } catch (e) {}
+}
+async function bridgeCallStop() {
+  for (const k of ['rv', 'ra']) { try { await bridgeUnsubscribe(k); } catch (e) {} }
+  const PD = (SDK && SDK.ProxyDirection) ? SDK.ProxyDirection : { PUBLISH: 0, SUBSCRIBE: 1 };
+  // limpar o modo proxy das partições da chamada (sem subs não há malha)
+  for (const k of ['cv', 'ca']) if (proxySet[k + 'Pub']) { try { await setProxiesSerial(sdef(k), [], PD.PUBLISH); } catch (e) {} proxySet[k + 'Pub'] = false; }
+  for (const k of ['rv', 'ra']) if (proxySet[k + 'Sub']) { try { await setProxiesSerial(sdef(k), [], PD.SUBSCRIBE); } catch (e) {} proxySet[k + 'Sub'] = false; }
+  console.log('bridge: call stop');
 }
 
 boot();

@@ -1,16 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="bg">#18181B</color>
-    <color name="fg">#E4E4E7</color>
-    <color name="muted">#71717A</color>
-    <color name="accent">#2563EB</color>
-    <color name="accentDark">#1D4ED8</color>
-    <color name="btnGray">#3F3F46</color>
-    <color name="stats">#34D399</color>
-    <color name="error">#F87171</color>
-    <color name="liveRed">#DC2626</color>
-    <color name="card">#232327</color>
-    <color name="ok">#34D399</color>
-    <color name="warn">#FBBF24</color>
+    <!-- Design system AAA: fundo quase-preto com tom índigo, cartões glass,
+         CTA live em gradiente crimson→laranja, acento elétrico violeta. -->
+    <color name="bg">#0B0B10</color>
+    <color name="fg">#F2F2F7</color>
+    <color name="muted">#8A8A98</color>
+    <color name="accent">#7C5CFF</color>
+    <color name="accentDark">#6847E6</color>
+    <color name="btnGray">#2A2A34</color>
+    <color name="stats">#2CE59B</color>
+    <color name="error">#FF6B6B</color>
+    <color name="liveRed">#FF2D55</color>
+    <color name="liveOrange">#FF6A00</color>
+    <color name="card">#15151C</color>
+    <color name="cardStroke">#262633</color>
+    <color name="ok">#2CE59B</color>
+    <color name="warn">#FFC24B</color>
     <color name="launcherBg">#FFFFFF</color>
 </resources>

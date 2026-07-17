@@ -17,6 +17,10 @@ object Wire {
     const val HDR = 20
     const val FLAG_KEY = 1
     const val FLAG_CFG = 2
+    // bit de TIPO DE MÉDIA: permite áudio e vídeo na MESMA partição (modos
+    // experimentais single-partition/mux) — o recetor demultiplexa por registo.
+    // Retrocompatível: viewers antigos ignoram bits desconhecidos.
+    const val FLAG_AUD = 4
     const val WIRE_MAX = 240 * 1024
     // v2: batches maiores → menos mensagens/s = menos assinaturas (CPU no
     // telemóvel) por +~30-50ms de latência. Formato de wire inalterado.
@@ -35,6 +39,10 @@ object Wire {
         return buf.array()
     }
 
+    /** Peek sem desserializar: o registo é ÁUDIO? (demux single-partition) */
+    fun isAudioRecord(rec: ByteArray): Boolean =
+        rec.size >= 2 && (rec[0].toInt() and 0xFF) == MAGIC && (rec[1].toInt() and FLAG_AUD) != 0
+
     /** Tolerates both wire formats: raw frame (starts with MAGIC) or container. */
     fun forEachRecord(data: ByteArray, fn: (ByteArray) -> Unit) {
         if (data.isEmpty()) return
@@ -49,7 +57,7 @@ object Wire {
         }
     }
 
-    fun packMedia(isKey: Boolean, tsUs: Double, durUs: Double, data: ByteArray, configJson: String?): List<ByteArray> {
+    fun packMedia(isKey: Boolean, tsUs: Double, durUs: Double, data: ByteArray, configJson: String?, isAudio: Boolean = false): List<ByteArray> {
         val cfgBytes = if (isKey && configJson != null) configJson.toByteArray(Charsets.UTF_8) else null
         val cfgLen = if (cfgBytes != null) 4 + cfgBytes.size else 0
         val room0 = WIRE_MAX - HDR - cfgLen
@@ -63,7 +71,7 @@ object Wire {
             val take = min(data.size - off, room)
             val buf = ByteBuffer.allocate(HDR + extra + take)
             buf.put(MAGIC.toByte())
-            buf.put(((if (isKey) FLAG_KEY else 0) or (if (cfgBytes != null) FLAG_CFG else 0)).toByte())
+            buf.put(((if (isKey) FLAG_KEY else 0) or (if (cfgBytes != null) FLAG_CFG else 0) or (if (isAudio) FLAG_AUD else 0)).toByte())
             buf.put(i.toByte())
             buf.put(fragCnt.toByte())
             buf.putDouble(tsUs)

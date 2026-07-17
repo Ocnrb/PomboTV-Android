@@ -34,12 +34,28 @@ class Broadcaster(
     private val context: Context,
     private val bridge: StreamrBridge,
     previewSurface: Surface?,
-    private val width: Int,
-    private val height: Int,
+    private var width: Int,
+    private var height: Int,
     private val bitrate: Int,
     private val kfIntervalMs: Int,
     private val cameraId: String?, // null → first back camera
     private val audioBitrate: Int = 64_000,
+    // chamada 1:1: kinds cv/ca (partições definidas pelo bridgeCallStart) e sem
+    // gestão de overlays (o callStart aplica os proxies de publish)
+    private val kindVideo: String = "video",
+    private val kindAudio: String = "audio",
+    private val manageOverlays: Boolean = true,
+    // EXPERIMENTAL — A/V na MESMA partição (o recetor demultiplexa por FLAG_AUD):
+    // singlePartition: áudio publica-se na partição de vídeo (mensagens próprias)
+    // muxAV: áudio entra nos MESMOS containers do vídeo (menos msgs/s; o áudio
+    //        herda o destino/cadência do vídeo). muxAV implica singlePartition.
+    private val singlePartition: Boolean = false,
+    private val muxAV: Boolean = false,
+    // PARTILHA DE ECRÃ: em vez da câmara, um VirtualDisplay (MediaProjection)
+    // espelha o ecrã diretamente para a surface do encoder. Sem preview (o
+    // espelho de si próprio seria recursivo), sem torch/zoom, rotation=0.
+    // (é o valor INICIAL — a fonte pode mudar em pleno live via setVideoSource)
+    screenProjection: android.media.projection.MediaProjection? = null,
     private val onStats: (String) -> Unit,
     private val onError: (String) -> Unit,
     private val onCameraInfo: (sensorOrientation: Int, hasTorch: Boolean, minZoom: Float, maxZoom: Float) -> Unit = { _, _, _, _ -> },
@@ -96,8 +112,13 @@ class Broadcaster(
     @Volatile var displayRotationDeg = 0
     private var sensorOrientation = 90
     private var facingFront = false
+    // fonte ATUAL de vídeo (muda em pleno live via setVideoSource)
+    @Volatile private var screenProj: android.media.projection.MediaProjection? = screenProjection
+    /** A emitir o ecrã (vs câmara)? — decide rotação, áudio e controlos. */
+    fun isScreenSource(): Boolean = screenProj != null
     private fun contentRotation(): Int =
-        if (facingFront) (sensorOrientation + displayRotationDeg) % 360
+        if (screenProj != null) 0 // o espelho do ecrã já vem direito
+        else if (facingFront) (sensorOrientation + displayRotationDeg) % 360
         else (sensorOrientation - displayRotationDeg + 360) % 360
 
     // Detachable preview (background support): with the activity hidden the
@@ -105,7 +126,27 @@ class Broadcaster(
     // only target and the broadcast keeps running.
     @Volatile private var previewSurf: Surface? = previewSurface
 
+    // câmara ATUAL (pode mudar em pleno live — switchCamera)
+    @Volatile private var curCameraId: String? = cameraId
+
     fun setMicMuted(m: Boolean) { micMuted = m }
+
+    /** Troca de câmara SEM quebrar a transmissão: o encoder (e a sua surface)
+     *  ficam vivos — só a câmara/sessão de captura são reconstruídas. O viewer
+     *  vê um congelamento de ~0,3-0,5s e a rotação/config atualiza no keyframe
+     *  seguinte (contentRotation usa o novo sensor/facing). */
+    fun switchCamera(newId: String?) {
+        if (newId == null || newId == curCameraId) return
+        curCameraId = newId
+        camHandler.post {
+            try { session?.close() } catch (e: Exception) {}
+            session = null
+            try { camera?.close() } catch (e: Exception) {}
+            camera = null
+            torchOn = false; zoomRatio = 1f // estado de lente não sobrevive à troca
+            if (running) openCamera()
+        }
+    }
 
     fun setTorch(on: Boolean) { torchOn = on; pushRequest() }
 
@@ -159,6 +200,90 @@ class Broadcaster(
     private var aThread: Thread? = null
     private var statsThread: Thread? = null
 
+    private var virtualDisplay: android.hardware.display.VirtualDisplay? = null
+
+    /** Liga o VirtualDisplay do MediaProjection atual ao encoder. */
+    private fun attachScreenSource(): Boolean {
+        val proj = screenProj ?: return false
+        return try {
+            // Android 14+ exige um callback registado ANTES do createVirtualDisplay
+            proj.registerCallback(object : android.media.projection.MediaProjection.Callback() {
+                override fun onStop() { if (running && screenProj === proj) onError("Screen sharing stopped.") }
+            }, camHandler)
+            val dpi = context.resources.displayMetrics.densityDpi
+            virtualDisplay = proj.createVirtualDisplay(
+                "pombotv-screen", width, height, dpi,
+                android.hardware.display.DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                encoderSurface, null, null)
+            onCameraInfo(0, false, 1f, 1f) // sem torch/zoom; conteúdo já direito
+            true
+        } catch (e: Exception) {
+            onError("Screen capture failed: ${e.message}")
+            false
+        }
+    }
+
+    /** Reconstrói o encoder de vídeo com novas dimensões (thread do camHandler).
+     *  Os viewers seguem: coded size novo no keyframe → rebuild do decoder. */
+    private fun restartVideoEncoder(newW: Int, newH: Int) {
+        val oldCodec = vCodec
+        vCodec = null // o drain loop rebenta no dequeue e termina
+        try { oldCodec?.stop() } catch (e: Exception) {}
+        vThread?.join(1500)
+        try { oldCodec?.release() } catch (e: Exception) {}
+        try { encoderSurface?.release() } catch (e: Exception) {}
+        encoderSurface = null
+        width = newW; height = newH
+        csdAnnexB = null // SPS/PPS novos vêm do encoder novo
+        dropUntilKey = false
+        startVideoEncoder()
+    }
+
+    /** Rotação do ecrã durante a partilha: o VirtualDisplay tem tamanho fixo e
+     *  o Android encolhia o conteúdo rodado dentro da moldura antiga — aqui o
+     *  encoder renasce transposto e o espelho segue a orientação real. */
+    fun resizeScreenCapture(newW: Int, newH: Int) {
+        if (screenProj == null || (newW == width && newH == height)) return
+        camHandler.post {
+            val vd = virtualDisplay ?: return@post
+            try {
+                vd.surface = null
+                restartVideoEncoder(newW, newH)
+                vd.resize(newW, newH, context.resources.displayMetrics.densityDpi)
+                vd.surface = encoderSurface
+                onCameraInfo(0, false, 1f, 1f)
+            } catch (e: Exception) { onError("Screen resize failed: ${e.message}") }
+        }
+    }
+
+    /** TROCA DE FONTE em pleno live (câmara↔câmara↔ecrã) sem parar a emissão:
+     *  só a origem e (se preciso) o encoder são reconstruídos — a rede nunca vê
+     *  interrupção além de ~0,5s de frames parados. Projection novo por troca
+     *  (o consentimento é de uso único no Android 14+). */
+    fun setVideoSource(newCamId: String?, newProj: android.media.projection.MediaProjection?, newW: Int, newH: Int) {
+        camHandler.post {
+            // 1) desligar a fonte atual
+            try { virtualDisplay?.surface = null } catch (e: Exception) {}
+            try { virtualDisplay?.release() } catch (e: Exception) {}
+            virtualDisplay = null
+            val oldProj = screenProj
+            if (oldProj != null && oldProj !== newProj) { try { oldProj.stop() } catch (e: Exception) {} }
+            try { session?.close() } catch (e: Exception) {}
+            session = null
+            try { camera?.close() } catch (e: Exception) {}
+            camera = null
+            torchOn = false; zoomRatio = 1f
+            screenProj = newProj
+            curCameraId = newCamId
+            // 2) encoder novo se as dimensões mudarem
+            try {
+                if (newW != width || newH != height) restartVideoEncoder(newW, newH)
+            } catch (e: Exception) { onError("Encoder restart failed: ${e.message}"); return@post }
+            // 3) ligar a fonte nova
+            if (newProj != null) attachScreenSource() else if (running) openCamera()
+        }
+    }
+
     fun start() {
         running = true
         try {
@@ -167,10 +292,14 @@ class Broadcaster(
             onError("H.264 encoder failed: ${e.message}")
             return
         }
-        openCamera()
+        if (screenProj != null) {
+            if (!attachScreenSource()) return
+        } else {
+            openCamera()
+        }
         aThread = thread(name = "audio-enc") { audioLoop() }
         // Join own overlays as a participant — pure publishers get poor delivery.
-        bridge.join("video"); bridge.join("audio")
+        if (manageOverlays) { bridge.join("video"); bridge.join("audio") }
         statsThread = thread(name = "stats") {
             var lastEnc = 0; var lastPub = 0; var lastMsg = 0; var lastAcked = 0L
             while (running) {
@@ -186,6 +315,8 @@ class Broadcaster(
                 val br = "%.1f".format(curBitrate / 1e6)
                 val fly = bridge.inFlight() / 1024
                 onMeter(txMbps, curBitrate / 1e6)
+                // espelho no logcat: permite medição automatizada (adb) sem UI
+                Log.d(TAG, "stats enc=${enc} pub=${pub} br=$br tx=${"%.2f".format(txMbps)} queue=${fly}KB backlog=${bEnc - bPub}")
                 onStats("encode=${enc}fps · publish=${pub}fps · msgs=$msg/s · br=${br}Mbps · tx=${"%.2f".format(txMbps)}Mbps · queue=${fly}KB · backlog=${bEnc - bPub}$kf")
             }
         }
@@ -252,7 +383,7 @@ class Broadcaster(
     @SuppressLint("MissingPermission")
     private fun openCamera() {
         val mgr = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-        val id = cameraId ?: mgr.cameraIdList.firstOrNull {
+        val id = curCameraId ?: mgr.cameraIdList.firstOrNull {
             mgr.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
         } ?: mgr.cameraIdList.firstOrNull()
         if (id == null) { onError("No camera available."); return }
@@ -377,7 +508,7 @@ class Broadcaster(
         if (isKey) {
             bKfBytes = data.size; bKfFrags = records.size
             flushVBatch() // keep order: pending deltas first
-            for (r in records) { bridge.publish("video", Wire.container(listOf(r))); bMsg++ }
+            for (r in records) { bridge.publish(kindVideo, Wire.container(listOf(r))); bMsg++ }
             bPub++
         } else {
             synchronized(vBatch) {
@@ -393,6 +524,9 @@ class Broadcaster(
         put("codec", codecStr)
         put("codedWidth", width)
         put("codedHeight", height)
+        // relógio de parede do keyframe: os viewers medem a latência E2E real
+        // (render − captura) assumindo relógios ~sincronizados (NTP)
+        put("wallMs", System.currentTimeMillis())
         put("streamSettings", JSONObject().apply {
             put("width", width); put("height", height)
             put("framerate", 30); put("bitrate", bitrate)
@@ -404,7 +538,7 @@ class Broadcaster(
     private fun flushVBatchLocked() {
         if (vBatch.isEmpty()) return
         val recs = ArrayList(vBatch); vBatch.clear()
-        bridge.publish("video", Wire.container(recs))
+        bridge.publish(kindVideo, Wire.container(recs))
         bPub += recs.size; bMsg++
     }
 
@@ -438,7 +572,37 @@ class Broadcaster(
             codec.release(); return
         }
 
+        // Partilha de ecrã: captura também o ÁUDIO DO DISPOSITIVO (AudioPlaybackCapture
+        // do mesmo MediaProjection) e mistura-o com o micro. Apps que bloqueiam
+        // captura (política de mídia) simplesmente não aparecem.
+        var devRec: AudioRecord? = null
+        val proj = screenProj
+        if (proj != null && android.os.Build.VERSION.SDK_INT >= 29) {
+            try {
+                val minBuf = AudioRecord.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+                val cfg = android.media.AudioPlaybackCaptureConfiguration.Builder(proj)
+                    .addMatchingUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                    .addMatchingUsage(android.media.AudioAttributes.USAGE_GAME)
+                    .addMatchingUsage(android.media.AudioAttributes.USAGE_UNKNOWN)
+                    .build()
+                devRec = AudioRecord.Builder()
+                    .setAudioFormat(AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(sampleRate)
+                        .setChannelMask(AudioFormat.CHANNEL_IN_MONO).build())
+                    .setBufferSizeInBytes(maxOf(minBuf * 2, chunkBytes * 4))
+                    .setAudioPlaybackCaptureConfig(cfg)
+                    .build()
+                devRec.startRecording()
+                Log.i(TAG, "device audio capture ativo (screen share)")
+            } catch (e: Exception) {
+                devRec = null
+                Log.w(TAG, "playback capture indisponível: ${e.message}")
+            }
+        }
+
         val pcm = ByteArray(chunkBytes)
+        val devPcm = ByteArray(chunkBytes)
         val info = MediaCodec.BufferInfo()
         var lastFlush = SystemClock.elapsedRealtime()
         while (running) {
@@ -452,6 +616,19 @@ class Broadcaster(
                         off += n
                     }
                     if (micMuted) java.util.Arrays.fill(pcm, 0, off, 0)
+                    // mistura do áudio do dispositivo (LE 16-bit, soma com clip)
+                    if (devRec != null && off > 0) {
+                        val n2 = devRec.read(devPcm, 0, off, AudioRecord.READ_NON_BLOCKING)
+                        var i = 0
+                        while (i + 1 < n2) {
+                            val a = (pcm[i].toInt() and 0xFF) or (pcm[i + 1].toInt() shl 8)
+                            val b = (devPcm[i].toInt() and 0xFF) or (devPcm[i + 1].toInt() shl 8)
+                            val m = (a + b).coerceIn(-32768, 32767)
+                            pcm[i] = (m and 0xFF).toByte()
+                            pcm[i + 1] = (m shr 8).toByte()
+                            i += 2
+                        }
+                    }
                     val ib = codec.getInputBuffer(inIdx)!!
                     ib.clear(); ib.put(pcm, 0, off)
                     codec.queueInputBuffer(inIdx, 0, off, System.nanoTime() / 1000, 0)
@@ -477,13 +654,23 @@ class Broadcaster(
         }
         try { rec.stop() } catch (e: Exception) {}
         rec.release()
+        try { devRec?.stop() } catch (e: Exception) {}
+        try { devRec?.release() } catch (e: Exception) {}
         try { codec.stop() } catch (e: Exception) {}
         codec.release()
     }
 
     private fun onAudioPacket(data: ByteArray, tsUs: Double) {
         if (aTsBaseUs < 0) aTsBaseUs = tsUs
-        val rec = Wire.packMedia(true, tsUs - aTsBaseUs, 20_000.0, data, null)[0]
+        val rec = Wire.packMedia(true, tsUs - aTsBaseUs, 20_000.0, data, null, isAudio = true)[0]
+        if (muxAV) {
+            // mux: o áudio viaja nos containers do vídeo (flush pela cadência dele)
+            synchronized(vBatch) {
+                vBatch.add(rec)
+                if (vBatch.size >= Wire.VBATCH_MAX + Wire.ABATCH_MAX) flushVBatchLocked()
+            }
+            return
+        }
         synchronized(aBatch) {
             aBatch.add(rec)
             if (aBatch.size >= Wire.ABATCH_MAX) flushABatchLocked()
@@ -493,11 +680,15 @@ class Broadcaster(
     private fun flushABatchLocked() {
         if (aBatch.isEmpty()) return
         val recs = ArrayList(aBatch); aBatch.clear()
-        bridge.publish("audio", Wire.container(recs))
+        // single-partition: mensagens de áudio próprias, mas na partição de vídeo
+        bridge.publish(if (singlePartition) kindVideo else kindAudio, Wire.container(recs))
     }
 
     fun stop() {
         running = false
+        try { virtualDisplay?.release() } catch (e: Exception) {}
+        virtualDisplay = null
+        try { screenProj?.stop() } catch (e: Exception) {}
         try { session?.stopRepeating() } catch (e: Exception) {}
         try { session?.close() } catch (e: Exception) {}
         try { camera?.close() } catch (e: Exception) {}
@@ -509,6 +700,6 @@ class Broadcaster(
         try { encoderSurface?.release() } catch (e: Exception) {}
         encoderSurface = null
         camThread.quitSafely()
-        bridge.leave("video"); bridge.leave("audio")
+        if (manageOverlays) { bridge.leave("video"); bridge.leave("audio") }
     }
 }

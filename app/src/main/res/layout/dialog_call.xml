@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingStart="20dp"
+    android:paddingTop="8dp"
+    android:paddingEnd="20dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Video quality"
+        android:textColor="@color/muted"
+        android:textSize="11sp" />
+
+    <Spinner
+        android:id="@+id/callQualitySel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:text="Audio bitrate"
+        android:textColor="@color/muted"
+        android:textSize="11sp" />
+
+    <Spinner
+        android:id="@+id/callAudioSel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:text="The first to join is the Host; the second joins as Guest."
+        android:textColor="@color/muted"
+        android:textSize="10sp" />
+</LinearLayout>

@@ -154,6 +154,10 @@ class StreamrBridge(context: Context, private val listener: Listener) {
     /** 0 = forçar malha; 1-3 = nº de ligações proxy por direção. */
     fun setProxyCounts(pub: Int, sub: Int) = js("bridgeSetProxyCounts($pub,$sub)")
 
+    /** meshStart: arranca em malha e promove a proxy; proxyOnly: malha proibida
+     *  (sem fallbacks; publishes sem proxy são descartados na ponte). */
+    fun setModes(meshStart: Boolean, proxyOnly: Boolean) = js("bridgeSetModes($meshStart,$proxyOnly)")
+
     /** Monitor de live ativo (subscrição leve ao áudio) — onBridgeLiveState. */
     fun monitorStart() = js("bridgeMonitorStart()")
     fun monitorStop() = js("bridgeMonitorStop()")
@@ -162,6 +166,11 @@ class StreamrBridge(context: Context, private val listener: Listener) {
     fun unsubscribe(kind: String) = js("bridgeUnsubscribe('$kind')")
     fun join(kind: String) = js("bridgeJoin('$kind')")
     fun leave(kind: String) = js("bridgeLeave('$kind')")
+
+    /** Chamada 1:1: define as partições dos kinds cv/ca (pub) e rv/ra (sub)
+     *  conforme o papel e aplica os proxies de publish. */
+    fun callStart(role: String) = js("bridgeCallStart('$role')")
+    fun callStop() = js("bridgeCallStop()")
 
     fun destroy() {
         main.post { webView.destroy() }

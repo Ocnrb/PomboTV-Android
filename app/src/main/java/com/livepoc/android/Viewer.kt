@@ -34,6 +34,11 @@ import kotlin.math.min
 class Viewer(
     private val bridge: StreamrBridge,
     videoSurface: Surface,
+    // chamada 1:1: kinds rv/ra (partições do par, via bridgeCallStart) e buffer
+    // alvo mais curto (a latência conversacional manda)
+    private val kindVideo: String = "video",
+    private val kindAudio: String = "audio",
+    baseTargetMs: Int = 400,
     private val onState: (String) -> Unit,
     private val onStats: (String) -> Unit,
     private val onVideoSize: (w: Int, h: Int) -> Unit = { _, _ -> },
@@ -41,13 +46,14 @@ class Viewer(
 ) {
     companion object {
         private const val TAG = "Viewer"
-        private const val BASE_TARGET_US = 400_000.0
         private const val MAX_TARGET_US = 1_500_000.0
-        private const val START_MIN_US = 350_000.0   // modest start cushion
         private const val V_LOOKAHEAD_US = 250_000.0 // feed decoder this far ahead
         private const val SAMPLE_RATE = 48000
         private const val US_PER_FRAME = 1e6 / SAMPLE_RATE
     }
+
+    private val baseTargetUs = baseTargetMs * 1000.0
+    private val startMinUs = minOf(baseTargetUs, 350_000.0) // modest start cushion
 
     @Volatile private var running = true
 
@@ -62,7 +68,7 @@ class Viewer(
     @Volatile private var newestVideoTs = 0.0
     @Volatile private var newestAudioTs = 0.0
     @Volatile private var avOffsetUs: Double? = null
-    @Volatile private var effTargetUs = BASE_TARGET_US
+    @Volatile private var effTargetUs = baseTargetUs
 
     // audio master clock: clock = writtenMediaUs − (written−played)·usPerFrame.
     // Re-anchoring is a clean jump of writtenMediaUs (no silence dragging).
@@ -114,6 +120,11 @@ class Viewer(
     @Volatile private var lastAudioArrivalNs = 0L // frescura do áudio (gaps de screen-share)
     @Volatile private var lastRenderNs = 0L       // último frame realmente renderizado (vAge)
     @Volatile private var rxBytes = 0L            // débito de chegada — encontra o teto do caminho
+    // latência E2E: âncora (wallMs, ts) do último keyframe com config — no
+    // render: e2e = agora − kfWall − (tsFrame − tsKf). Requer relógios ~NTP.
+    @Volatile private var kfWallMs = 0L
+    @Volatile private var kfTsUs = 0.0
+    @Volatile private var e2eMs = -1
 
     private var vThread: Thread? = null
     private var aThread: Thread? = null
@@ -121,8 +132,8 @@ class Viewer(
 
     fun start() {
         onState("waiting for signal…")
-        bridge.subscribe("video")
-        bridge.subscribe("audio")
+        bridge.subscribe(kindVideo)
+        bridge.subscribe(kindAudio)
         vThread = thread(name = "video-dec") { videoLoop() }
         aThread = thread(name = "audio-dec") { audioLoop() }
         statsThread = thread(name = "viewer-stats") { statsLoop() }
@@ -133,7 +144,10 @@ class Viewer(
         if (!running) return
         rxBytes += payload.size
         Wire.forEachRecord(payload) { rec ->
-            if (kind == "video") {
+            // demux POR REGISTO: nos modos single-partition/mux o áudio viaja na
+            // partição de vídeo com FLAG_AUD — o recetor auto-deteta, qualquer
+            // que seja o modo do emissor
+            if (kind == kindVideo && !Wire.isAudioRecord(rec)) {
                 stVMsg++
                 val f = vAsm.add(rec) ?: return@forEachRecord
                 stVFrm++; sawVideo = true
@@ -228,7 +242,7 @@ class Viewer(
             if (!audioAnchored && !sawAudio && vWallAnchorNs == 0L && sawVideo
                 && SystemClock.elapsedRealtime() - startWall > 1500) {
                 synchronized(lock) {
-                    if (spanUs(vPending) >= START_MIN_US) {
+                    if (spanUs(vPending) >= startMinUs) {
                         vWallAnchorTsUs = vPending.last().timestampUs - effTargetUs
                         vWallAnchorNs = System.nanoTime()
                     }
@@ -266,6 +280,11 @@ class Viewer(
                 }
             } ?: continue
 
+            // âncora de latência E2E (wallMs segue em todos os keyframes)
+            if (frame.key && frame.config != null) {
+                val w = frame.config.optLong("wallMs", 0)
+                if (w > 0) { kfWallMs = w; kfTsUs = frame.timestampUs }
+            }
             // Formato mudou em pleno live (rotação do telemóvel, ou a FONTE
             // redimensionou — ex.: barra de partilha do tab) → rebuild com este
             // keyframe (rotação vive no decoder; tamanho define caixa/decoder).
@@ -351,7 +370,15 @@ class Viewer(
             val clock = videoClockUs()
             val lateUs = if (clock.isNaN()) 0.0 else clock - info.presentationTimeUs
             val render = lateUs <= 120_000
-            if (render) lastRenderNs = System.nanoTime()
+            if (render) {
+                lastRenderNs = System.nanoTime()
+                // latência E2E real deste frame (captura→render), via âncora do kf
+                if (kfWallMs > 0) {
+                    val lat = (System.currentTimeMillis() - kfWallMs -
+                        ((info.presentationTimeUs - kfTsUs) / 1000.0)).toInt()
+                    e2eMs = if (e2eMs < 0) lat else (e2eMs * 7 + lat) / 8
+                }
+            }
             c.releaseOutputBuffer(idx, render) // drop if hopelessly late
         }
     }
@@ -411,7 +438,7 @@ class Viewer(
         // gate 1: modest cushion of the master
         while (running) {
             val ready = synchronized(lock) {
-                if (sawAudio && spanUs(aPending) >= min(effTargetUs, START_MIN_US)) true
+                if (sawAudio && spanUs(aPending) >= min(effTargetUs, startMinUs)) true
                 else { lock.wait(100); false }
             }
             if (ready) break
@@ -507,8 +534,8 @@ class Viewer(
                 continue
             }
             dry = false
-            if (SystemClock.elapsedRealtime() - lastUnderMs > 5000 && effTargetUs > BASE_TARGET_US)
-                effTargetUs = max(BASE_TARGET_US, effTargetUs - 3_000) // ~150ms/s decay at 50 pkt/s
+            if (SystemClock.elapsedRealtime() - lastUnderMs > 5000 && effTargetUs > baseTargetUs)
+                effTargetUs = max(baseTargetUs, effTargetUs - 3_000) // ~150ms/s decay at 50 pkt/s
 
             when {
                 pkt.timestampUs < writtenMediaUs - 20_000 -> {
@@ -615,12 +642,15 @@ class Viewer(
             val vSpan: Double; val aSpan: Double; val vN: Int; val aN: Int
             synchronized(lock) { vSpan = spanUs(vPending); aSpan = spanUs(aPending); vN = vPending.size; aN = aPending.size }
             val vAgeMs = if (lastRenderNs == 0L) -1 else ((System.nanoTime() - lastRenderNs) / 1_000_000).toInt()
+            // espelho no logcat: permite medição automatizada (adb) sem UI
+            Log.d(TAG, "stats vDec=$stVDec aFrm=$stAFrm rx=${"%.2f".format(rxMbps)} vAge=$vAgeMs e2e=$e2eMs under=$stUnder tgt=${(effTargetUs / 1000).toInt()}")
             onStats(
                 "vMsg=$stVMsg vFrames=$stVFrm vDecoded=$stVDec aFrames=$stAFrm rx=${"%.2f".format(rxMbps)}Mbps\n" +
                 "vBuf=$vN(${(vSpan / 1000).toInt()}ms) aBuf=$aN(${(aSpan / 1000).toInt()}ms) " +
                 "playing=${audioAnchored || vWallAnchorNs != 0L} vAge=${vAgeMs}ms under=$stUnder " +
-                "target=${(effTargetUs / 1000).toInt()}/${(BASE_TARGET_US / 1000).toInt()}ms " +
-                "avOff=${((avOffsetUs ?: 0.0) / 1000).toInt()}ms"
+                "target=${(effTargetUs / 1000).toInt()}/${(baseTargetUs / 1000).toInt()}ms " +
+                "avOff=${((avOffsetUs ?: 0.0) / 1000).toInt()}ms" +
+                (if (e2eMs >= 0) " e2e=${e2eMs}ms" else "")
             )
         }
     }
@@ -628,8 +658,8 @@ class Viewer(
     fun stop() {
         running = false
         synchronized(lock) { lock.notifyAll() }
-        bridge.unsubscribe("video")
-        bridge.unsubscribe("audio")
+        bridge.unsubscribe(kindVideo)
+        bridge.unsubscribe(kindAudio)
         vThread?.join(2000); aThread?.join(2000); statsThread?.join(1500)
         track = null
     }

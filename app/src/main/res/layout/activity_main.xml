@@ -25,6 +25,13 @@
                 android:gravity="center_vertical"
                 android:orientation="horizontal">
 
+                <ImageView
+                    android:layout_width="46dp"
+                    android:layout_height="46dp"
+                    android:layout_marginEnd="12dp"
+                    android:contentDescription="PomboTV"
+                    android:src="@drawable/pombo_logo" />
+
                 <LinearLayout
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
@@ -34,9 +41,10 @@
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
+                        android:letterSpacing="-0.02"
                         android:text="PomboTV"
                         android:textColor="#FFFFFF"
-                        android:textSize="28sp"
+                        android:textSize="30sp"
                         android:textStyle="bold" />
 
                     <TextView
@@ -89,12 +97,12 @@
                 android:id="@+id/liveBadge"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
+                android:layout_marginTop="12dp"
                 android:background="@drawable/bg_live"
-                android:paddingStart="9dp"
-                android:paddingTop="4dp"
-                android:paddingEnd="9dp"
-                android:paddingBottom="4dp"
+                android:paddingStart="14dp"
+                android:paddingTop="7dp"
+                android:paddingEnd="14dp"
+                android:paddingBottom="7dp"
                 android:text="●  LIVE now — someone is broadcasting"
                 android:textColor="#FFFFFF"
                 android:textSize="11sp"
@@ -104,7 +112,7 @@
             <Button
                 android:id="@+id/goLive"
                 android:layout_width="match_parent"
-                android:layout_height="58dp"
+                android:layout_height="60dp"
                 android:layout_marginTop="32dp"
                 android:background="@drawable/bg_btn_primary"
                 android:text="Go Live"
@@ -116,10 +124,22 @@
             <Button
                 android:id="@+id/goWatch"
                 android:layout_width="match_parent"
-                android:layout_height="58dp"
+                android:layout_height="60dp"
                 android:layout_marginTop="12dp"
                 android:background="@drawable/bg_btn_secondary"
                 android:text="Watch"
+                android:textAllCaps="false"
+                android:textColor="#FFFFFF"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/goCall"
+                android:layout_width="match_parent"
+                android:layout_height="60dp"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/bg_btn_secondary"
+                android:text="Call · 1:1 (beta)"
                 android:textAllCaps="false"
                 android:textColor="#FFFFFF"
                 android:textSize="16sp"
@@ -238,6 +258,74 @@
                     android:text="0 = P2P mesh · 1–3 = via operator nodes (requires an active sponsorship)"
                     android:textColor="@color/muted"
                     android:textSize="10sp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="18dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Fast start (mesh)"
+                            android:textColor="@color/fg"
+                            android:textSize="13sp" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Join instantly via mesh, promote to proxies when ready"
+                            android:textColor="@color/muted"
+                            android:textSize="10sp" />
+                    </LinearLayout>
+
+                    <Switch
+                        android:id="@+id/meshStartSw"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Proxy only"
+                            android:textColor="@color/fg"
+                            android:textSize="13sp" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Never use mesh — without live operators, nothing flows"
+                            android:textColor="@color/muted"
+                            android:textSize="10sp" />
+                    </LinearLayout>
+
+                    <Switch
+                        android:id="@+id/proxyOnlySw"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content" />
+                </LinearLayout>
             </LinearLayout>
 
         </LinearLayout>
@@ -282,6 +370,19 @@
                     android:textColor="@color/muted"
                     android:textSize="11sp"
                     android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:text="Source"
+                    android:textColor="@color/muted"
+                    android:textSize="11sp" />
+
+                <Spinner
+                    android:id="@+id/srcSel"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content" />
 
                 <LinearLayout
                     android:layout_width="match_parent"
@@ -374,6 +475,42 @@
                     android:id="@+id/audioSel"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="14dp"
+                    android:letterSpacing="0.1"
+                    android:text="TRANSPORT (experimental)"
+                    android:textColor="@color/muted"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+
+                <CheckBox
+                    android:id="@+id/onePartCb"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="Single partition — audio rides the video partition"
+                    android:textColor="@color/fg"
+                    android:textSize="12sp" />
+
+                <CheckBox
+                    android:id="@+id/muxCb"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Mux A/V — audio inside the same messages as video"
+                    android:textColor="@color/fg"
+                    android:textSize="12sp" />
+
+                <CheckBox
+                    android:id="@+id/mirrorCb"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="Mirror front camera preview (cosmetic, local only)"
+                    android:textColor="@color/fg"
+                    android:textSize="12sp" />
             </LinearLayout>
 
             <LinearLayout
@@ -436,6 +573,42 @@
                 android:layout_width="match_parent"
                 android:layout_height="match_parent" />
         </com.livepoc.android.AspectFrameLayout>
+
+        <!-- placeholder durante a partilha de ecrã: sem preview (espelhar-se
+             seria recursivo; a SurfaceView da câmara mostrava a última frame
+             congelada) — em vez disso, um cartão neutro -->
+        <LinearLayout
+            android:id="@+id/screenPlaceholder"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <ImageView
+                android:layout_width="72dp"
+                android:layout_height="72dp"
+                android:alpha="0.55"
+                android:src="@drawable/ic_screen"
+                app:tint="#FFFFFF" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="Sharing your screen"
+                android:textColor="#FFFFFF"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="Viewers see your screen live"
+                android:textColor="@color/muted"
+                android:textSize="12sp" />
+        </LinearLayout>
 
         <LinearLayout
             android:id="@+id/bTopBar"
@@ -501,14 +674,28 @@
                 android:textSize="10sp" />
         </LinearLayout>
 
+        <!-- consola no topo-esquerdo, compacta, junto às stats -->
+        <ImageButton
+            android:id="@+id/bConsoleBtn"
+            android:layout_width="34dp"
+            android:layout_height="34dp"
+            android:layout_gravity="top|start"
+            android:layout_marginStart="12dp"
+            android:layout_marginTop="52dp"
+            android:background="@drawable/bg_roundbtn"
+            android:contentDescription="Console"
+            android:padding="6dp"
+            android:scaleType="centerInside"
+            android:src="@drawable/ic_code" />
+
         <TextView
             android:id="@+id/bStats"
-            android:layout_width="match_parent"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_gravity="bottom"
-            android:layout_marginStart="12dp"
+            android:layout_gravity="top|start"
+            android:layout_marginStart="54dp"
+            android:layout_marginTop="52dp"
             android:layout_marginEnd="12dp"
-            android:layout_marginBottom="88dp"
             android:background="@drawable/bg_console"
             android:fontFamily="monospace"
             android:padding="10dp"
@@ -516,78 +703,86 @@
             android:textSize="10sp"
             android:visibility="gone" />
 
+        <!-- rail vertical à esquerda: baixo→cima = zoom, mic, torch, flip, screen -->
         <LinearLayout
             android:id="@+id/bControls"
-            android:layout_width="match_parent"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_gravity="bottom"
-            android:gravity="center_vertical"
-            android:orientation="horizontal"
-            android:paddingStart="16dp"
-            android:paddingTop="12dp"
-            android:paddingEnd="16dp"
+            android:layout_gravity="bottom|start"
+            android:orientation="vertical"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
             android:paddingBottom="16dp">
 
-            <TextView
-                android:id="@+id/zoomChip"
+            <ImageButton
+                android:id="@+id/bSourceBtn"
                 android:layout_width="48dp"
                 android:layout_height="48dp"
                 android:background="@drawable/bg_roundbtn"
-                android:gravity="center"
-                android:text="1.0×"
-                android:textColor="#FFFFFF"
-                android:textSize="12sp"
-                android:textStyle="bold" />
+                android:contentDescription="Camera / screen source"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_screen" />
 
             <ImageButton
-                android:id="@+id/micBtn"
+                android:id="@+id/bFlipBtn"
                 android:layout_width="48dp"
                 android:layout_height="48dp"
-                android:layout_marginStart="10dp"
+                android:layout_marginTop="10dp"
                 android:background="@drawable/bg_roundbtn"
-                android:contentDescription="Mute microphone"
+                android:contentDescription="Switch camera"
                 android:scaleType="centerInside"
-                android:src="@drawable/ic_mic" />
+                android:src="@drawable/ic_flip" />
 
             <ImageButton
                 android:id="@+id/torchBtn"
                 android:layout_width="48dp"
                 android:layout_height="48dp"
-                android:layout_marginStart="10dp"
+                android:layout_marginTop="10dp"
                 android:background="@drawable/bg_roundbtn"
                 android:contentDescription="Torch"
                 android:scaleType="centerInside"
                 android:src="@drawable/ic_flash" />
 
             <ImageButton
-                android:id="@+id/bConsoleBtn"
+                android:id="@+id/micBtn"
                 android:layout_width="48dp"
                 android:layout_height="48dp"
-                android:layout_marginStart="10dp"
+                android:layout_marginTop="10dp"
                 android:background="@drawable/bg_roundbtn"
-                android:contentDescription="Console"
+                android:contentDescription="Mute microphone"
                 android:scaleType="centerInside"
-                android:src="@drawable/ic_code" />
+                android:src="@drawable/ic_mic" />
 
-            <Space
-                android:layout_width="0dp"
-                android:layout_height="1dp"
-                android:layout_weight="1" />
-
-            <Button
-                android:id="@+id/stopBtn"
-                android:layout_width="wrap_content"
+            <TextView
+                android:id="@+id/zoomChip"
+                android:layout_width="48dp"
                 android:layout_height="48dp"
-                android:background="@drawable/bg_stop"
-                android:minWidth="0dp"
-                android:minHeight="0dp"
-                android:paddingStart="24dp"
-                android:paddingEnd="24dp"
-                android:text="End"
-                android:textAllCaps="false"
+                android:layout_marginTop="10dp"
+                android:background="@drawable/bg_roundbtn"
+                android:gravity="center"
+                android:text="1.0×"
                 android:textColor="#FFFFFF"
+                android:textSize="12sp"
                 android:textStyle="bold" />
         </LinearLayout>
+
+        <!-- End: pill flutuante no canto inferior direito (sempre visível) -->
+        <Button
+            android:id="@+id/stopBtn"
+            android:layout_width="wrap_content"
+            android:layout_height="48dp"
+            android:layout_gravity="bottom|end"
+            android:layout_marginEnd="16dp"
+            android:layout_marginBottom="16dp"
+            android:background="@drawable/bg_stop"
+            android:minWidth="0dp"
+            android:minHeight="0dp"
+            android:paddingStart="28dp"
+            android:paddingEnd="28dp"
+            android:text="End"
+            android:textAllCaps="false"
+            android:textColor="#FFFFFF"
+            android:textStyle="bold" />
     </FrameLayout>
 
     <!-- ======================= WATCH ======================= -->
@@ -696,6 +891,25 @@
             android:textSize="10sp"
             android:visibility="gone" />
 
+        <!-- volume VERTICAL: altura consistente em portrait e landscape
+             (a barra horizontal ficava curta/esticada conforme a orientação) -->
+        <FrameLayout
+            android:id="@+id/volPanel"
+            android:layout_width="48dp"
+            android:layout_height="170dp"
+            android:layout_gravity="bottom|start"
+            android:layout_marginStart="74dp"
+            android:layout_marginBottom="88dp"
+            android:background="@drawable/bg_chip"
+            android:visibility="gone">
+
+            <com.livepoc.android.VerticalSeekBar
+                android:id="@+id/volumeBarV"
+                android:layout_width="40dp"
+                android:layout_height="150dp"
+                android:layout_gravity="center" />
+        </FrameLayout>
+
         <LinearLayout
             android:id="@+id/wControls"
             android:layout_width="match_parent"
@@ -727,15 +941,10 @@
                 android:scaleType="centerInside"
                 android:src="@drawable/ic_volume_up" />
 
-            <SeekBar
-                android:id="@+id/volumeBar"
+            <Space
                 android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="6dp"
-                android:layout_marginEnd="6dp"
-                android:layout_weight="1"
-                android:max="100"
-                android:progress="100" />
+                android:layout_height="1dp"
+                android:layout_weight="1" />
 
             <ImageButton
                 android:id="@+id/wConsoleBtn"
@@ -767,6 +976,187 @@
                 android:paddingStart="24dp"
                 android:paddingEnd="24dp"
                 android:text="Leave"
+                android:textAllCaps="false"
+                android:textColor="#FFFFFF"
+                android:textStyle="bold" />
+        </LinearLayout>
+    </FrameLayout>
+
+    <!-- ======================= CALL 1:1 ======================= -->
+    <FrameLayout
+        android:id="@+id/pageCall"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#000000"
+        android:visibility="gone">
+
+        <com.livepoc.android.AspectFrameLayout
+            android:id="@+id/callRemoteBox"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:layout_gravity="center">
+
+            <SurfaceView
+                android:id="@+id/callRemoteSurface"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
+        </com.livepoc.android.AspectFrameLayout>
+
+        <ProgressBar
+            android:id="@+id/cSpinner"
+            android:layout_width="52dp"
+            android:layout_height="52dp"
+            android:layout_gravity="center"
+            android:indeterminate="true" />
+
+        <!-- preview local (PiP) — 3:4 (buffer do sensor transposto em portrait) -->
+        <FrameLayout
+            android:id="@+id/callLocalBox"
+            android:layout_width="96dp"
+            android:layout_height="128dp"
+            android:layout_gravity="top|end"
+            android:layout_marginTop="60dp"
+            android:layout_marginEnd="12dp"
+            android:background="@drawable/bg_card">
+
+            <SurfaceView
+                android:id="@+id/callLocalSurface"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
+        </FrameLayout>
+
+        <LinearLayout
+            android:id="@+id/cTopBar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:padding="12dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:background="@drawable/bg_live"
+                android:paddingStart="9dp"
+                android:paddingTop="3dp"
+                android:paddingEnd="9dp"
+                android:paddingBottom="3dp"
+                android:text="CALL"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/cTimer"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/bg_chip"
+                android:fontFamily="monospace"
+                android:paddingStart="8dp"
+                android:paddingTop="3dp"
+                android:paddingEnd="8dp"
+                android:paddingBottom="3dp"
+                android:text="00:00"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp" />
+
+            <Space
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
+
+            <TextView
+                android:id="@+id/cStatus"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="8dp"
+                android:fontFamily="monospace"
+                android:textColor="@color/muted"
+                android:textSize="10sp" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/cStats"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom"
+            android:layout_marginStart="12dp"
+            android:layout_marginEnd="12dp"
+            android:layout_marginBottom="88dp"
+            android:background="@drawable/bg_console"
+            android:fontFamily="monospace"
+            android:padding="10dp"
+            android:textColor="@color/stats"
+            android:textSize="10sp"
+            android:visibility="gone" />
+
+        <LinearLayout
+            android:id="@+id/cControls"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="16dp"
+            android:paddingTop="12dp"
+            android:paddingEnd="16dp"
+            android:paddingBottom="16dp">
+
+            <ImageButton
+                android:id="@+id/cMicBtn"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="@drawable/bg_roundbtn"
+                android:contentDescription="Mute microphone"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_mic" />
+
+            <ImageButton
+                android:id="@+id/cFlipBtn"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginStart="10dp"
+                android:background="@drawable/bg_roundbtn"
+                android:contentDescription="Switch camera"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_flip" />
+
+            <ImageButton
+                android:id="@+id/cScreenBtn"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginStart="10dp"
+                android:background="@drawable/bg_roundbtn"
+                android:contentDescription="Share screen in call"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_screen" />
+
+            <ImageButton
+                android:id="@+id/cConsoleBtn"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginStart="10dp"
+                android:background="@drawable/bg_roundbtn"
+                android:contentDescription="Console"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_code" />
+
+            <Space
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
+
+            <Button
+                android:id="@+id/cEndBtn"
+                android:layout_width="wrap_content"
+                android:layout_height="48dp"
+                android:background="@drawable/bg_stop"
+                android:minWidth="0dp"
+                android:minHeight="0dp"
+                android:paddingStart="24dp"
+                android:paddingEnd="24dp"
+                android:text="End call"
                 android:textAllCaps="false"
                 android:textColor="#FFFFFF"
                 android:textStyle="bold" />
