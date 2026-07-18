@@ -25,6 +25,7 @@ import android.view.WindowManager
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.ImageButton
+import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.Spinner
 import android.widget.TextView
@@ -46,7 +47,19 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
     private var callBroadcaster: Broadcaster? = null
     private var callViewer: Viewer? = null
     private var callMicMuted = false
+    private var callTorchOn = false
+    private var callHasTorch = false
+    private var meetTorchOn = false
+    private var meetHasTorch = false
     private var pendingCallRole: String? = null
+    // config unificada (mesma página/estilo para LIVE, Call e Meeting)
+    private var cfgMode = "live"                 // "live" | "call" | "meet"
+    private var pendingCfgRole: String? = null   // após pedir permissões
+    // valores capturados da página de config (usados pelos arranques de sessão)
+    private var cfgW = 1280; private var cfgH = 720
+    private var cfgBr = 2_000_000; private var cfgKfMs = 1000; private var cfgAudioBr = 64_000
+    private var cfgCamId: String? = null; private var cfgScreen = false; private var cfgNoCam = false
+    private var cfgFps = 30; private var cfgAdapt = true
     // qualidade da chamada (persistida): (largura, altura, bitrate vídeo)
     private val CALL_Q = listOf(
         "480p · 0.8 Mbps" to Triple(640, 480, 800_000),
@@ -90,6 +103,9 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
         "1080p · 3.0 Mbps" to Triple(1920, 1080, 3_000_000))
     // swap preview↔remoto + PiP móvel/redimensionável + zoom no preview fullscreen
     private var callSwapped = false
+    private var callFill = false     // FIT/FILL do vídeo principal (viewing local)
+    private var callCamOff = false   // câmara própria cortada na chamada
+    private var callPeerCamOff = false // câmara do par cortada (via flag de controlo)
     private var callRemoteW = 3; private var callRemoteH = 4
     private var callW = 640; private var callH = 480
     private var callSensor = 270 // frontal típica
@@ -160,6 +176,7 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
     private var lastWatchPass = ""      // prefill do diálogo Watch (só memória)
     private var callPass: String? = null // password da chamada (do dialog_call)
     private val RES = listOf("480p (640x480)" to Pair(640, 480), "720p (1280x720)" to Pair(1280, 720), "1080p (1920x1080)" to Pair(1920, 1080))
+    private val SCREEN_FPS = listOf(30, 60) // fps escolhível para partilha de ecrã
     private val ABR = listOf("32 kbps" to 32_000, "64 kbps" to 64_000, "128 kbps" to 128_000)
     private val PERMS = arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
     private val REQ_PERMS = 1
@@ -171,11 +188,29 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
     private val REQ_MEET = 8
     private val REQ_SCREEN_MEET = 9        // entrar no meeting com fonte = ecrã
     private val REQ_SCREEN_MEET_SWITCH = 10 // trocar para ecrã em pleno meeting
+    private val REQ_SCREEN_CALL_START = 11 // entrar na chamada com fonte = ecrã
     private var camOpts: List<Pair<String, String>> = emptyList() // camera id → label
     private var netLine = ""      // overlay info (proxies/mesh) appended to the consoles
     private var lastBStats = ""
     private var lastWStats = ""
+    private var lastCStatsUp = ""   // call: a NOSSA emissão (↑)
+    private var lastCStatsDn = ""   // call: o feed do par (↓)
     private var lastMeetStats = ""
+
+    // medidor UNIFORME da barra de topo (todos os modos): resolução + seta ↑/↓.
+    // Toque no chip do medidor alterna a direção; "—" quando essa direção não
+    // tem tráfego (ex.: proxy só sobe, ou watch só desce). meterRes = "720p".
+    private var meterUp = true
+    private var meterTxMbps = -1.0
+    private var meterRxMbps = -1.0
+    private var meterRes = ""
+    private var meterBr = -1.0          // bitrate da sessão (Mbps)
+    private var meterFps = -1           // fps (encode no emissor, decode no viewer)
+    private var meterMetric = 0         // zona esquerda: 0=resolução 1=bitrate 2=fps
+    // definições EM VIGOR na sessão atual (a engrenagem do overlay altera-as ao vivo)
+    private var sessionBr = 2_000_000
+    private var sessionFps = 30
+    private var sessionAbr = 64_000
 
     // session UI: timer, auto-hide, fullscreen, mute/torch/zoom
     private val ui = Handler(Looper.getMainLooper())
@@ -190,7 +225,13 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
     private var minZoom = 1f
     private var maxZoom = 1f
     private var liveNow = false
-    private val hideControls = Runnable { if (currentPage == "watch") setWatchControlsVisible(false) }
+    private val hideControls = Runnable {
+        when (currentPage) {
+            "watch" -> setWatchControlsVisible(false)
+            "call" -> setCallControlsVisible(false)
+            "meet" -> setMeetControlsVisible(false)
+        }
+    }
     private val timerTick = object : Runnable {
         override fun run() {
             val secs = (android.os.SystemClock.elapsedRealtime() - sessionStartMs) / 1000
@@ -216,6 +257,10 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             findViewById<View>(R.id.pageBroadcast).setPadding(bars.left, bars.top, bars.right, bars.bottom)
             findViewById<View>(R.id.pageWatch).setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            // call/meet: sem esta margem, a barra de topo (chip que abre a consola)
+            // ficava POR BAIXO da status bar do sistema → o toque não a apanhava
+            findViewById<View>(R.id.pageCall).setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            findViewById<View>(R.id.pageMeet).setPadding(bars.left, bars.top, bars.right, bars.bottom)
             findViewById<View>(R.id.pageHome).setPadding(0, bars.top, 0, bars.bottom)
             findViewById<View>(R.id.pageSettings).setPadding(0, bars.top, 0, bars.bottom)
             findViewById<View>(R.id.pageNetwork).setPadding(0, bars.top, 0, bars.bottom)
@@ -245,9 +290,17 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
             override fun surfaceDestroyed(h: SurfaceHolder) { viewer?.setVideoSurface(null) }
         })
         findViewById<SurfaceView>(R.id.previewSurface).holder.addCallback(object : SurfaceHolder.Callback {
+            private var lastW = 0; private var lastH = 0
             override fun surfaceCreated(h: SurfaceHolder) { broadcaster?.setPreviewSurface(h.surface) }
-            override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, hh: Int) {}
-            override fun surfaceDestroyed(h: SurfaceHolder) { broadcaster?.setPreviewSurface(null) }
+            // mudar a resolução muda o ASPETO da view (480p 4:3 ↔ 720p 16:9): sem
+            // refazer a sessão, a câmara escrevia com as dimensões antigas (deformada)
+            override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, hh: Int) {
+                if (w == lastW && hh == lastH) return
+                val first = lastW == 0
+                lastW = w; lastH = hh
+                if (!first) broadcaster?.refreshPreviewSurface(h.surface)
+            }
+            override fun surfaceDestroyed(h: SurfaceHolder) { lastW = 0; lastH = 0; broadcaster?.setPreviewSurface(null) }
         })
         // superfícies da chamada: destacáveis (background) e COMUTÁVEIS (swap
         // preview↔remoto) — o conteúdo é re-encaminhado, as views ficam quietas
@@ -269,13 +322,7 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
         })
         setupCallGestures()
 
-        findViewById<Button>(R.id.goLive).setOnClickListener {
-            if (!bridge.connected) { toast("Still connecting to Streamr…"); return@setOnClickListener }
-            // one broadcast at a time — the audio monitor keeps liveNow current
-            if (liveNow) { toast("A live broadcast is already on air — join as a viewer."); return@setOnClickListener }
-            if (hasPerms()) show("settings")
-            else ActivityCompat.requestPermissions(this, PERMS, REQ_PERMS)
-        }
+        findViewById<Button>(R.id.goLive).setOnClickListener { openConfig("live") }
         findViewById<Button>(R.id.goWatch).setOnClickListener {
             if (!bridge.connected) { toast("Still connecting to Streamr…"); return@setOnClickListener }
             // password de decifra (streams encriptados) — vazio = sem encriptação;
@@ -296,67 +343,20 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
                 .setNegativeButton("Cancel", null)
                 .show()
         }
-        findViewById<Button>(R.id.goCall).setOnClickListener {
-            if (!bridge.connected) { toast("Still connecting to Streamr…"); return@setOnClickListener }
-            // sem sinalização: o primeiro entra como Host, o segundo como Guest.
-            // O diálogo escolhe também a qualidade (vídeo/áudio), persistida.
-            val p = prefs()
-            val view = layoutInflater.inflate(R.layout.dialog_call, null)
-            val qSel = view.findViewById<Spinner>(R.id.callQualitySel)
-            qSel.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, CALL_Q.map { it.first })
-            qSel.setSelection(p.getInt("callQ", 1))
-            val aSel = view.findViewById<Spinner>(R.id.callAudioSel)
-            aSel.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, CALL_A.map { it.first })
-            aSel.setSelection(p.getInt("callA", 0))
-            val begin = { role: String ->
-                p.edit().putInt("callQ", qSel.selectedItemPosition).putInt("callA", aSel.selectedItemPosition).apply()
-                callPass = view.findViewById<android.widget.EditText>(R.id.callPassEdit)
-                    .text.toString().ifEmpty { null }
-                if (hasPerms()) startCall(role)
-                else { pendingCallRole = role; ActivityCompat.requestPermissions(this, PERMS, REQ_CALL) }
-            }
-            androidx.appcompat.app.AlertDialog.Builder(this)
-                .setTitle("Call · 1:1")
-                .setView(view)
-                .setPositiveButton("Start (Host)") { _, _ -> begin("host") }
-                .setNegativeButton("Join (Guest)") { _, _ -> begin("guest") }
-                .setNeutralButton("Cancel", null)
-                .show()
-        }
-        findViewById<Button>(R.id.goMeet).setOnClickListener {
-            if (!bridge.connected) { toast("Still connecting to Streamr…"); return@setOnClickListener }
-            val p = prefs()
-            val view = layoutInflater.inflate(R.layout.dialog_meet, null)
-            val sSel = view.findViewById<Spinner>(R.id.meetSourceSel)
-            sSel.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, MEET_SRC)
-            sSel.setSelection(p.getInt("meetSrc", 0))
-            val qSel = view.findViewById<Spinner>(R.id.meetQualitySel)
-            qSel.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, MEET_Q.map { it.first })
-            qSel.setSelection(p.getInt("meetQ", 1))
-            val aSel = view.findViewById<Spinner>(R.id.meetAudioSel)
-            aSel.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, CALL_A.map { it.first })
-            aSel.setSelection(p.getInt("meetA", 0))
-            val adaptCb = view.findViewById<android.widget.CheckBox>(R.id.meetAdaptCb)
-            adaptCb.isChecked = p.getBoolean("meetAdapt", true)
-            androidx.appcompat.app.AlertDialog.Builder(this)
-                .setTitle("Meeting")
-                .setView(view)
-                .setPositiveButton("Join") { _, _ ->
-                    p.edit().putInt("meetSrc", sSel.selectedItemPosition)
-                        .putInt("meetQ", qSel.selectedItemPosition)
-                        .putInt("meetA", aSel.selectedItemPosition)
-                        .putBoolean("meetAdapt", adaptCb.isChecked).apply()
-                    val srcIdx = sSel.selectedItemPosition
-                    if (hasPerms()) launchMeeting(srcIdx)
-                    else { pendingMeet = true; pendingMeetSrc = srcIdx; ActivityCompat.requestPermissions(this, PERMS, REQ_MEET) }
-                }
-                .setNegativeButton("Cancel", null)
-                .show()
-        }
+        findViewById<Button>(R.id.goCall).setOnClickListener { openConfig("call") }
+        findViewById<Button>(R.id.goMeet).setOnClickListener { openConfig("meet") }
+        findViewById<Button>(R.id.cfgGuestBtn).setOnClickListener { onConfigStart("guest") }
         findViewById<ImageButton>(R.id.meetMicBtn).setOnClickListener {
             meetMicMuted = !meetMicMuted
             meetBroadcaster?.setMicMuted(meetMicMuted)
             styleToggle(R.id.meetMicBtn, meetMicMuted, if (meetMicMuted) R.drawable.ic_mic_off else R.drawable.ic_mic)
+        }
+        findViewById<ImageButton>(R.id.meetTorchBtn).setOnClickListener {
+            meetTorchOn = !meetTorchOn
+            applyMeetFlash()
+        }
+        findViewById<ImageButton>(R.id.meetTorchBtn).setOnLongClickListener {
+            showFlashMenu(it, meetFlashSrc) { s -> meetFlashSrc = s; applyMeetFlash() }; true
         }
         findViewById<ImageButton>(R.id.meetCamBtn).setOnClickListener { toggleMeetCam() }
         findViewById<ImageButton>(R.id.meetScreenBtn).setOnClickListener {
@@ -369,7 +369,11 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
             }
         }
         findViewById<ImageButton>(R.id.meetFlipBtn).setOnClickListener { flipMeetCamera() }
-        findViewById<ImageButton>(R.id.meetConsoleBtn).setOnClickListener { toggle(R.id.meetStats) }
+        findViewById<ImageButton>(R.id.meetFlipBtn).setOnLongClickListener {
+            if (!meetCamOff && !meetIsScreen) showCameraMenu(it, meetCamId) { id -> meetCamId = id; meetBroadcaster?.switchCamera(id); applyMeetLocalAspect() }; true
+        }
+        // consola abre ao tocar no chip MEET (o botão <> foi removido)
+        findViewById<TextView>(R.id.meetChip).setOnClickListener { toggleConsole() }
         findViewById<Button>(R.id.meetLeaveBtn).setOnClickListener { stopMeeting(); show("home") }
         // destaque: toque no tile local → 2×2 → fullscreen; toque no fs volta
         findViewById<View>(R.id.meetLocalTile).setOnClickListener { meetTileTap(-1) }
@@ -400,15 +404,41 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
         }
         // preview local do meeting: destacável em background (o emissor continua)
         findViewById<SurfaceView>(R.id.meetLocalSurface).holder.addCallback(object : SurfaceHolder.Callback {
+            private var lastW = 0; private var lastH = 0
             override fun surfaceCreated(h: SurfaceHolder) {
                 if (!(meetSpotFs && meetSpotSlot == -1)) meetBroadcaster?.setPreviewSurface(h.surface)
             }
-            override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, hh: Int) {}
+            // nova resolução → buffer com outro aspeto: refazer a sessão (ver broadcast)
+            override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, hh: Int) {
+                if (w == lastW && hh == lastH) return
+                val first = lastW == 0
+                lastW = w; lastH = hh
+                if (!first && !(meetSpotFs && meetSpotSlot == -1)) meetBroadcaster?.refreshPreviewSurface(h.surface)
+            }
             override fun surfaceDestroyed(h: SurfaceHolder) {
                 if (!(meetSpotFs && meetSpotSlot == -1)) meetBroadcaster?.setPreviewSurface(null)
             }
         })
         findViewById<ImageButton>(R.id.cFlipBtn).setOnClickListener { flipCallCamera() }
+        findViewById<ImageButton>(R.id.cFlipBtn).setOnLongClickListener {
+            showCameraMenu(it, callCamId) { id -> callCamId = id; callZoom = 1f; callBroadcaster?.switchCamera(id); routeCallSurfaces() }; true
+        }
+        findViewById<ImageButton>(R.id.cTorchBtn).setOnClickListener {
+            callTorchOn = !callTorchOn
+            applyCallFlash()
+        }
+        findViewById<ImageButton>(R.id.cTorchBtn).setOnLongClickListener {
+            showFlashMenu(it, callFlashSrc) { s -> callFlashSrc = s; applyCallFlash() }; true
+        }
+        // paridade com o Meeting: fullscreen, FIT/FILL, cortar câmara
+        findViewById<ImageButton>(R.id.cFullscreenBtn).setOnClickListener { setFullscreen(!fullscreen); bumpAutoHide() }
+        findViewById<TextView>(R.id.cFitBtn).setOnClickListener {
+            callFill = !callFill
+            (it as TextView).text = if (callFill) "FILL" else "FIT"
+            findViewById<AspectFrameLayout>(R.id.callRemoteBox).fillMode = callFill
+            bumpAutoHide()
+        }
+        findViewById<ImageButton>(R.id.cCamBtn).setOnClickListener { toggleCallCam() }
         findViewById<ImageButton>(R.id.cScreenBtn).setOnClickListener {
             if (callIsScreen) switchCallToCamera()
             else {
@@ -431,12 +461,15 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
             styleToggle(R.id.cMicBtn, callMicMuted, if (callMicMuted) R.drawable.ic_mic_off else R.drawable.ic_mic)
             refreshNotif()
         }
-        findViewById<ImageButton>(R.id.cConsoleBtn).setOnClickListener { toggle(R.id.cStats) }
+        // consola abre ao tocar no chip CALL (o botão <> foi removido)
+        findViewById<TextView>(R.id.cCallChip).setOnClickListener { toggleConsole() }
         findViewById<Button>(R.id.cEndBtn).setOnClickListener { stopCall(); show("home") }
         findViewById<ImageButton>(R.id.gearBtn).setOnClickListener { show("network") }
         findViewById<ImageButton>(R.id.netBack).setOnClickListener { show("home") }
         findViewById<Button>(R.id.settingsBack).setOnClickListener { show("home") }
-        findViewById<Button>(R.id.startBtn).setOnClickListener { startBroadcast() }
+        findViewById<Button>(R.id.startBtn).setOnClickListener {
+            onConfigStart(if (cfgMode == "call") "host" else cfgMode)
+        }
         findViewById<Button>(R.id.stopBtn).setOnClickListener { stopBroadcast(); show("home") }
         findViewById<Button>(R.id.leaveBtn).setOnClickListener { stopWatch(); show("home") }
 
@@ -492,7 +525,21 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
     private fun setupSessionControls() {
         // tap the video to show/hide controls (auto-hide on the viewer);
         // pinch on the broadcast preview to zoom
-        findViewById<View>(R.id.pageWatch).setOnClickListener { setWatchControlsVisible(!controlsVisible) }
+        findViewById<View>(R.id.pageWatch).setOnClickListener {
+            if (isConsoleOpen()) toggleConsole() else setWatchControlsVisible(!controlsVisible)
+        }
+        // meeting: toque nos espaços entre tiles = mostrar/esconder overlay (os
+        // tiles consomem os seus próprios toques → aí o meetTileTap revela). O
+        // ScrollView central cobre o miolo; as faixas topo/fundo caem na página.
+        val meetTap = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                if (isConsoleOpen()) toggleConsole() else setMeetControlsVisible(!controlsVisible)
+                return true
+            }
+        })
+        val meetTapTouch = View.OnTouchListener { _, ev -> meetTap.onTouchEvent(ev); false }
+        findViewById<View>(R.id.pageMeet).setOnTouchListener(meetTapTouch)
+        findViewById<View>(R.id.meetScroll).setOnTouchListener(meetTapTouch)
 
         val scaleDet = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
             override fun onScale(d: ScaleGestureDetector): Boolean { setZoom(curZoom * d.scaleFactor); return true }
@@ -503,7 +550,6 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
                 val v = if (vis) View.VISIBLE else View.GONE
                 findViewById<View>(R.id.bControls).visibility = v
                 findViewById<View>(R.id.bTopBar).visibility = v
-                findViewById<View>(R.id.bConsoleBtn).visibility = v
                 findViewById<View>(R.id.stopBtn).visibility = v
                 // a consola de stats só reaparece se estava aberta antes
                 if (!vis) findViewById<View>(R.id.bStats).visibility = View.GONE
@@ -531,27 +577,59 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
         }
         findViewById<ImageButton>(R.id.torchBtn).setOnClickListener {
             torchOn = !torchOn
-            broadcaster?.setTorch(torchOn)
-            styleToggle(R.id.torchBtn, torchOn, R.drawable.ic_flash)
+            applyBcastFlash()
         }
-        findViewById<ImageButton>(R.id.bFlipBtn).setOnClickListener {
-            // frontal↔traseira em pleno live — o encoder não para (switchCamera);
-            // torch/zoom não sobrevivem à troca, repor a UI
-            val curFront = camOpts.firstOrNull { it.first == bcastCamId }?.second?.startsWith("Front") == true
-            val next = camOpts.firstOrNull { it.first.isNotEmpty() && it.second.startsWith("Front") != curFront }
-                ?: return@setOnClickListener
-            bcastCamId = next.first
+        findViewById<ImageButton>(R.id.torchBtn).setOnLongClickListener {
+            showFlashMenu(it, bcastFlashSrc) { s -> bcastFlashSrc = s; applyBcastFlash() }; true
+        }
+        // troca de câmara: função partilhada (usada pelo toque curto front↔back e
+        // pelas escolhas do menu de toque longo). Repõe torch/zoom (não sobrevivem).
+        val bSwitchCam = { id: String ->
+            bcastCamId = id
             torchOn = false
+            exitScreenFlash()
             styleToggle(R.id.torchBtn, false, R.drawable.ic_flash)
             curZoom = 1f
             findViewById<TextView>(R.id.zoomChip).text = "1.0×"
-            broadcaster?.switchCamera(next.first)
+            broadcaster?.switchCamera(id)
             applyBroadcastMirror()
         }
-        findViewById<ImageButton>(R.id.bConsoleBtn).setOnClickListener { toggle(R.id.bStats) }
-        findViewById<ImageButton>(R.id.wConsoleBtn).setOnClickListener { toggle(R.id.wStats); bumpAutoHide() }
+        findViewById<ImageButton>(R.id.bFlipBtn).setOnClickListener {
+            val curFront = camOpts.firstOrNull { it.first == bcastCamId }?.second?.startsWith("Front") == true
+            val next = camOpts.firstOrNull { it.first.isNotEmpty() && it.second.startsWith("Front") != curFront }
+                ?: return@setOnClickListener
+            bSwitchCam(next.first)
+        }
+        findViewById<ImageButton>(R.id.bFlipBtn).setOnLongClickListener {
+            showCameraMenu(it, bcastCamId) { id -> bSwitchCam(id) }; true
+        }
+        // consola abre ao tocar no chip LIVE (o botão <> foi removido)
+        findViewById<TextView>(R.id.bLiveChip).setOnClickListener { toggleConsole() }
+        findViewById<TextView>(R.id.wLiveChip).setOnClickListener { toggleConsole() }
+
+        // Medidor da barra de topo com DUAS zonas de toque:
+        //  · metade ESQUERDA  → cicla a métrica: resolução → bitrate → fps
+        //  · metade DIREITA   → alterna ↑ (upload) ↔ ↓ (download)
+        val meterTap = View.OnTouchListener { v, ev ->
+            if (ev.action == android.view.MotionEvent.ACTION_UP) {
+                if (ev.x < v.width / 2f) meterMetric = (meterMetric + 1) % 3 else meterUp = !meterUp
+                refreshMeter(); bumpAutoHide(); v.performClick()
+            }
+            true
+        }
+        listOf(R.id.bMeter, R.id.wMeter, R.id.cMeter, R.id.meetMeter).forEach {
+            findViewById<TextView>(it).setOnTouchListener(meterTap)
+        }
+
+        // engrenagem do overlay → definições EM SESSÃO (não existe no watcher)
+        listOf(R.id.bCogBtn, R.id.cCogBtn, R.id.meetCogBtn).forEach {
+            findViewById<ImageButton>(it).setOnClickListener { showSessionSettings() }
+        }
 
         findViewById<ImageButton>(R.id.fsBtn).setOnClickListener { setFullscreen(!fullscreen); bumpAutoHide() }
+        // fullscreen (esconde a status bar) em Broadcast e Meeting
+        findViewById<ImageButton>(R.id.bFullscreenBtn).setOnClickListener { setFullscreen(!fullscreen) }
+        findViewById<ImageButton>(R.id.meetFullscreenBtn).setOnClickListener { setFullscreen(!fullscreen); bumpAutoHide() }
 
         // volume VERTICAL (altura consistente em portrait/landscape)
         val vol = findViewById<VerticalSeekBar>(R.id.volumeBarV)
@@ -607,16 +685,123 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
         v.visibility = if (v.visibility == View.VISIBLE) View.GONE else View.VISIBLE
     }
 
+    /** Consola de stats do modo atual. */
+    private fun consoleId(): Int = when (currentPage) {
+        "broadcast" -> R.id.bStats
+        "watch" -> R.id.wStats
+        "call" -> R.id.cStats
+        "meet" -> R.id.meetStats
+        else -> 0
+    }
+
+    private fun isConsoleOpen(): Boolean {
+        val id = consoleId(); if (id == 0) return false
+        return findViewById<View>(id).visibility == View.VISIBLE
+    }
+
+    /** Abre/fecha a consola do modo atual. ABERTA: cancela o auto-hide — o overlay
+     *  fica fixo enquanto se leem os stats. FECHADA: reinicia o timeout para o
+     *  overlay voltar a esconder-se. */
+    private fun toggleConsole() {
+        val id = consoleId(); if (id == 0) return
+        val v = findViewById<View>(id)
+        val open = v.visibility != View.VISIBLE
+        v.visibility = if (open) View.VISIBLE else View.GONE
+        if (open) ui.removeCallbacks(hideControls) else bumpAutoHide()
+    }
+
     private fun setWatchControlsVisible(vis: Boolean) {
         controlsVisible = vis
         val v = if (vis) View.VISIBLE else View.GONE
         findViewById<View>(R.id.wControls).visibility = v
         findViewById<View>(R.id.wTopBar).visibility = v
-        findViewById<View>(R.id.fsBtn).visibility = v
+        findViewById<View>(R.id.leaveBtn).visibility = v
         // o slider de volume só aparece por ação explícita no ícone de som;
         // ao esconder os controlos, esconde-se também
         if (!vis) findViewById<View>(R.id.volPanel).visibility = View.GONE
         if (vis) bumpAutoHide() else ui.removeCallbacks(hideControls)
+    }
+
+    private fun setCallControlsVisible(vis: Boolean) {
+        controlsVisible = vis
+        val v = if (vis) View.VISIBLE else View.GONE
+        findViewById<View>(R.id.cControls).visibility = v
+        findViewById<View>(R.id.cTopBar).visibility = v
+        findViewById<View>(R.id.cEndBtn).visibility = v
+        if (!vis) findViewById<View>(R.id.cStats).visibility = View.GONE
+        if (vis) bumpAutoHide() else ui.removeCallbacks(hideControls)
+    }
+
+    private fun setMeetControlsVisible(vis: Boolean) {
+        controlsVisible = vis
+        val v = if (vis) View.VISIBLE else View.GONE
+        findViewById<View>(R.id.meetControls).visibility = v
+        findViewById<View>(R.id.meetTopBar).visibility = v
+        findViewById<View>(R.id.meetLeaveBtn).visibility = v
+        if (!vis) findViewById<View>(R.id.meetStats).visibility = View.GONE
+        if (vis) bumpAutoHide() else ui.removeCallbacks(hideControls)
+    }
+
+    // ---- medidor uniforme (barra de topo, todos os modos) ----
+    private fun meterView(): TextView? = when (currentPage) {
+        "broadcast" -> findViewById(R.id.bMeter)
+        "watch" -> findViewById(R.id.wMeter)
+        "call" -> findViewById(R.id.cMeter)
+        "meet" -> findViewById(R.id.meetMeter)
+        else -> null
+    }
+
+    /** Etiqueta de resolução pela convenção 480p/720p/1080p: usa sempre o LADO
+     *  CURTO. Sem isto, um emissor em RETRATO (720x1080 → h=1280) aparecia como
+     *  "1280p" enquanto o mesmo stream em paisagem dava "720p". */
+    private fun resLabel(w: Int, h: Int) = "${minOf(w, h)}p"
+
+    /** Reinicia o medidor ao entrar num modo: direção primária + resolução. */
+    private fun resetMeter(up: Boolean, res: String = "") {
+        meterUp = up; meterTxMbps = -1.0; meterRxMbps = -1.0; meterRes = res
+        meterBr = -1.0; meterFps = -1; meterMetric = 0; refreshMeter()
+    }
+    private fun setMeterTx(mbps: Double) { meterTxMbps = mbps; refreshMeter() }
+    private fun setMeterRx(mbps: Double) { meterRxMbps = mbps; refreshMeter() }
+    private fun setMeterRes(res: String) { meterRes = res; refreshMeter() }
+    /** bitrate (Mbps) e fps da sessão — métricas alternativas da zona esquerda. */
+    private fun setMeterBr(mbps: Double) { meterBr = mbps; refreshMeter() }
+    private fun setMeterFps(fps: Int) { meterFps = fps; refreshMeter() }
+
+    /** Largura ESTÁVEL: a contagem de dígitos mantém-se ao tirar decimais à
+     *  medida que o valor cresce (9,99 · 12,3 · 123) — o chip não "salta". */
+    private fun fmtMbps(v: Double): String = when {
+        v < 0 -> "—"
+        v >= 100 -> "%.0f".format(v)
+        v >= 10 -> "%.1f".format(v)
+        else -> "%.2f".format(v)
+    }
+
+    /** Zona esquerda: a métrica escolhida (resolução / bitrate / fps). */
+    private fun meterHead(): String = when (meterMetric) {
+        1 -> (if (meterBr >= 0) fmtMbps(meterBr) else "—") + " Mbps"
+        2 -> (if (meterFps >= 0) "$meterFps" else "—") + " fps"
+        else -> meterRes.ifEmpty { "—" }
+    }
+
+    private fun refreshMeter() {
+        val tv = meterView() ?: return
+        val v = if (meterUp) meterTxMbps else meterRxMbps
+        // largura CONSTANTE: o chip é monospace, por isso alinhar a métrica (9 =
+        // "2.50 Mbps") e o número (4 = "9.99"/"12.3"/" 123") fixa o tamanho.
+        tv.text = meterHead().padEnd(9) + " · " + (if (meterUp) "↑ " else "↓ ") +
+            fmtMbps(v).padStart(4) + " Mbps"
+    }
+
+    /** Mensagem de estado TRANSITÓRIA: aparece e apaga-se sozinha. Um erro pontual
+     *  (ex.: rasto de uma troca de resolução) não deve ficar colado no ecrã enquanto
+     *  a emissão continua saudável. Estados permanentes usam .text diretamente. */
+    private fun transientStatus(viewId: Int, msg: String, ms: Long = 5000) {
+        val tv = findViewById<TextView>(viewId) ?: return
+        tv.text = msg
+        tv.tag = (tv.tag as? Int ?: 0) + 1
+        val gen = tv.tag as Int
+        ui.postDelayed({ if (tv.tag as? Int == gen && tv.text == msg) tv.text = "" }, ms)
     }
 
     /** Restart the 4s auto-hide countdown — called on every interaction. */
@@ -634,12 +819,47 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
         } else {
             c.show(WindowInsetsCompat.Type.systemBars())
         }
-        findViewById<ImageButton>(R.id.fsBtn).setImageResource(
-            if (on) R.drawable.ic_fullscreen_exit else R.drawable.ic_fullscreen)
+        // atualiza o ícone do botão de fullscreen do modo atual (watch/broadcast/meet)
+        val icon = if (on) R.drawable.ic_fullscreen_exit else R.drawable.ic_fullscreen
+        val id = when (currentPage) {
+            "broadcast" -> R.id.bFullscreenBtn
+            "call" -> R.id.cFullscreenBtn
+            "meet" -> R.id.meetFullscreenBtn
+            else -> R.id.fsBtn
+        }
+        findViewById<ImageButton>(id).setImageResource(icon)
     }
 
     // ============== settings ==============
     private fun prefs() = getSharedPreferences("livepoc", Context.MODE_PRIVATE)
+
+    // Rota de áudio de VOZ (meeting/call): o mic usa VOICE_COMMUNICATION (AEC);
+    // sem MODE_IN_COMMUNICATION + altifalante o Android roteia a reprodução para
+    // o AURICULAR e parece "sem som". Restaura o estado ao sair.
+    private var prevAudioMode = android.media.AudioManager.MODE_NORMAL
+    private var prevSpeakerphone = false
+    private var commAudioOn = false
+    private fun setCommAudioRoute(on: Boolean) {
+        val am = getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+        try {
+            if (on && !commAudioOn) {
+                prevAudioMode = am.mode
+                @Suppress("DEPRECATION") run { prevSpeakerphone = am.isSpeakerphoneOn }
+                am.mode = android.media.AudioManager.MODE_IN_COMMUNICATION
+                if (Build.VERSION.SDK_INT >= 31) {
+                    val spk = am.availableCommunicationDevices.firstOrNull {
+                        it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+                    if (spk != null) am.setCommunicationDevice(spk)
+                } else @Suppress("DEPRECATION") { am.isSpeakerphoneOn = true }
+                commAudioOn = true
+            } else if (!on && commAudioOn) {
+                if (Build.VERSION.SDK_INT >= 31) am.clearCommunicationDevice()
+                else @Suppress("DEPRECATION") { am.isSpeakerphoneOn = prevSpeakerphone }
+                am.mode = prevAudioMode
+                commAudioOn = false
+            }
+        } catch (e: Exception) { android.util.Log.w("Audio", "setCommAudioRoute", e) }
+    }
 
     /** Identidade persistente: PK gerada uma vez e guardada — permite testar
      *  permissões NATIVAS do Streamr (grants a um endereço estável). */
@@ -678,11 +898,10 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
 
     private fun pushProxyCounts() {
         val p = prefs()
-        bridge.setProxyCounts(p.getInt("proxyPub", 2), p.getInt("proxySub", 2))
-        // modos de rede: fast start (malha→proxy), proxy-only (malha proibida),
-        // single-partition (áudio+vídeo na #0; a #1 é ignorada)
-        bridge.setModes(p.getBoolean("meshStart", false), p.getBoolean("proxyOnly", false),
-            p.getBoolean("onePart", false))
+        bridge.setProxyCounts(p.getInt("proxyPub", 1), p.getInt("proxySub", 1))
+        // modos de rede: fast start (malha→proxy), proxy-only (malha proibida).
+        // single-partition é o ÚNICO modo (áudio+vídeo na #0; a #1 é ignorada).
+        bridge.setModes(p.getBoolean("meshStart", false), p.getBoolean("proxyOnly", false))
     }
 
     private fun setupProxySelectors() {
@@ -691,10 +910,10 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
         for ((id, key) in listOf(R.id.proxyPubSel to "proxyPub", R.id.proxySubSel to "proxySub")) {
             val sel = findViewById<Spinner>(id)
             sel.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, opts)
-            sel.setSelection(p.getInt(key, 2))
+            sel.setSelection(p.getInt(key, 1))
             sel.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(parent: android.widget.AdapterView<*>?, v: View?, pos: Int, idL: Long) {
-                    if (p.getInt(key, 2) != pos) {
+                    if (p.getInt(key, 1) != pos) {
                         p.edit().putInt(key, pos).apply()
                         pushProxyCounts()
                     }
@@ -702,7 +921,7 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
                 override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
             }
         }
-        for ((id, key) in listOf(R.id.meshStartSw to "meshStart", R.id.proxyOnlySw to "proxyOnly", R.id.onePartSw to "onePart")) {
+        for ((id, key) in listOf(R.id.meshStartSw to "meshStart", R.id.proxyOnlySw to "proxyOnly")) {
             val sw = findViewById<android.widget.Switch>(id)
             sw.isChecked = p.getBoolean(key, false)
             sw.setOnCheckedChangeListener { _, checked ->
@@ -710,6 +929,22 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
                 pushProxyCounts()
             }
         }
+        // espelho do preview frontal — definição GLOBAL, igual em todos os modos
+        // (broadcast/call/meeting leem mirrorOn() ao montar as superfícies)
+        val mirrorSw = findViewById<android.widget.Switch>(R.id.mirrorSw)
+        mirrorSw.isChecked = p.getBoolean("mirrorFront", false)
+        mirrorSw.setOnCheckedChangeListener { _, c ->
+            p.edit().putBoolean("mirrorFront", c).apply()
+            applyBroadcastMirror()
+            if (callBroadcaster != null) routeCallSurfaces()
+            if (meeting != null) applyMeetLocalMirror()
+        }
+    }
+
+    /** Espelho do preview local do meeting (cosmético; front + mirror global). */
+    private fun applyMeetLocalMirror() {
+        findViewById<SurfaceView>(R.id.meetLocalSurface).scaleX =
+            if (!meetIsScreen && mirrorOn() && isFrontId(meetCamId)) -1f else 1f
     }
 
     /** All cameras the device exposes, labeled by facing and zoom factor vs the main back camera. */
@@ -760,13 +995,17 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
         audioSel.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, ABR.map { it.first })
         audioSel.setSelection(prefs().getInt("audioBr", 1)) // default 64 kbps
 
-        // modos experimentais de transporte (persistidos); mux implica onePart
-        // espelho cosmético do preview frontal (aplica ao vivo se possível)
-        val mirrorCb = findViewById<android.widget.CheckBox>(R.id.mirrorCb)
-        mirrorCb.isChecked = prefs().getBoolean("mirrorFront", false)
-        mirrorCb.setOnCheckedChangeListener { _, c ->
-            prefs().edit().putBoolean("mirrorFront", c).apply()
-            applyBroadcastMirror()
+        // fps da partilha de ecrã: 30 ou 60 (persistido; aplica ao vivo se possível)
+        val fpsSel = findViewById<Spinner>(R.id.fpsSel)
+        fpsSel.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, SCREEN_FPS.map { "$it fps" })
+        fpsSel.setSelection(SCREEN_FPS.indexOf(prefs().getInt("screenFps", 30)).coerceAtLeast(0))
+        fpsSel.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(p: android.widget.AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                val fps = SCREEN_FPS[pos]
+                prefs().edit().putInt("screenFps", fps).apply()
+                broadcaster?.changeMaxFps(fps)
+            }
+            override fun onNothingSelected(p: android.widget.AdapterView<*>?) {}
         }
 
         val brLabel = findViewById<TextView>(R.id.brLabel)
@@ -777,18 +1016,10 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
             override fun onStartTrackingTouch(sb: SeekBar) {}
             override fun onStopTrackingTouch(sb: SeekBar) {}
         })
-        val kfLabel = findViewById<TextView>(R.id.kfLabel)
-        findViewById<SeekBar>(R.id.kf).setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(sb: SeekBar, p: Int, u: Boolean) {
-                kfLabel.text = "Keyframe %.1f s".format(kfOf(p) / 1000.0)
-            }
-            override fun onStartTrackingTouch(sb: SeekBar) {}
-            override fun onStopTrackingTouch(sb: SeekBar) {}
-        })
     }
 
     private fun bitrateOf(progress: Int) = 500_000 + progress * 100_000       // 0.5–8.0 Mbps
-    private fun kfOf(progress: Int) = 500 + progress * 250                    // 0.5–4.0 s
+    private val KF_MS = 1000 // keyframe fixo a 1s (sem configuração)
 
     private fun hasPerms() = PERMS.all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }
 
@@ -878,6 +1109,83 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
         findViewById<View>(R.id.previewBox).visibility = if (isScreenShare) View.GONE else View.VISIBLE
     }
 
+    /** Abre a MESMA página de config (estilo LIVE) preparada para o modo pedido.
+     *  Fonte/resolução/câmara/bitrate/keyframe/áudio/mirror/fps/password iguais em
+     *  todos; extras por modo: adaptativo (meeting) e botão Guest (call). */
+    private fun openConfig(mode: String) {
+        if (!bridge.connected) { toast("Still connecting to Streamr…"); return }
+        if (mode == "live" && liveNow) { toast("A live broadcast is already on air — join as a viewer."); return }
+        cfgMode = mode
+        val p = prefs()
+        findViewById<TextView>(R.id.cfgTitle).text =
+            when (mode) { "call" -> "Call · 1:1"; "meet" -> "Meeting"; else -> "New broadcast" }
+        val srcOpts = if (mode == "meet") listOf("Camera", "Screen share", "No camera (audio only)")
+                      else listOf("Camera", "Screen share")
+        findViewById<Spinner>(R.id.srcSel).apply {
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, srcOpts)
+            setSelection(p.getInt("${mode}Src", 0).coerceIn(0, srcOpts.size - 1))
+        }
+        findViewById<Spinner>(R.id.resSel).setSelection(p.getInt("${mode}Res", if (mode == "live") 1 else 0))
+        val camSel = findViewById<Spinner>(R.id.camSel)
+        val defCam = if (mode == "live") 0 else camOpts.indexOfFirst { it.second.startsWith("Front") }.coerceAtLeast(0)
+        camSel.setSelection(p.getInt("${mode}Cam", defCam).coerceIn(0, (camSel.adapter?.count ?: 1) - 1))
+        findViewById<SeekBar>(R.id.bitrate).progress =
+            p.getInt("${mode}Br", if (mode == "live") 15 else if (mode == "meet") 3 else 7)
+        findViewById<Spinner>(R.id.audioSel).setSelection(p.getInt("${mode}Audio", if (mode == "live") 1 else 0))
+        findViewById<View>(R.id.adaptCb).visibility = if (mode == "meet") View.VISIBLE else View.GONE
+        findViewById<android.widget.CheckBox>(R.id.adaptCb).isChecked = p.getBoolean("meetAdapt", true)
+        findViewById<Button>(R.id.startBtn).text =
+            when (mode) { "call" -> "Start (Host)"; "meet" -> "Join"; else -> "Go Live" }
+        findViewById<View>(R.id.cfgGuestBtn).visibility = if (mode == "call") View.VISIBLE else View.GONE
+        findViewById<TextView>(R.id.settingsStatus).text = ""
+        if (hasPerms()) show("settings")
+        else ActivityCompat.requestPermissions(this, PERMS, REQ_PERMS)
+    }
+
+    /** Lê a página de config para os campos cfg* e persiste por modo. */
+    private fun captureCfg() {
+        val p = prefs(); val m = cfgMode
+        val srcPos = findViewById<Spinner>(R.id.srcSel).selectedItemPosition
+        cfgScreen = srcPos == 1; cfgNoCam = srcPos == 2
+        val resPos = findViewById<Spinner>(R.id.resSel).selectedItemPosition
+        cfgW = RES[resPos].second.first; cfgH = RES[resPos].second.second
+        val brProg = findViewById<SeekBar>(R.id.bitrate).progress
+        cfgBr = bitrateOf(brProg); cfgKfMs = KF_MS
+        val audioPos = findViewById<Spinner>(R.id.audioSel).selectedItemPosition
+        cfgAudioBr = ABR[audioPos].second
+        val camPos = findViewById<Spinner>(R.id.camSel).selectedItemPosition
+        if (camOpts.isEmpty()) camOpts = enumCameras()
+        cfgCamId = if (cfgScreen || cfgNoCam) null else camOpts.getOrNull(camPos)?.first
+        cfgFps = SCREEN_FPS[findViewById<Spinner>(R.id.fpsSel).selectedItemPosition]
+        cfgAdapt = findViewById<android.widget.CheckBox>(R.id.adaptCb).isChecked
+        // ponto de partida das definições EM SESSÃO (a engrenagem altera daqui)
+        sessionBr = cfgBr; sessionFps = cfgFps; sessionAbr = cfgAudioBr
+        p.edit().putInt("${m}Src", srcPos).putInt("${m}Res", resPos).putInt("${m}Cam", camPos)
+            .putInt("${m}Br", brProg).putInt("${m}Audio", audioPos)
+            .putBoolean("meetAdapt", cfgAdapt).apply()
+    }
+
+    /** Ação do botão primário/guest da config — arranca a sessão do modo atual. */
+    private fun onConfigStart(role: String) {
+        captureCfg()
+        callPass = findViewById<android.widget.EditText>(R.id.bPassEdit).text.toString().ifEmpty { null }
+        when (cfgMode) {
+            "live" -> startBroadcast() // lê os mesmos controlos + trata o ecrã internamente
+            "call" -> if (cfgScreen) { pendingCfgRole = role; requestScreen(REQ_SCREEN_CALL_START) } else startCall(role)
+            "meet" -> when {
+                cfgScreen -> requestScreen(REQ_SCREEN_MEET)
+                cfgNoCam -> startMeeting(null, camOff = true)
+                else -> startMeeting(null, camOff = false)
+            }
+        }
+    }
+
+    private fun requestScreen(reqCode: Int) {
+        val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
+        @Suppress("DEPRECATION")
+        startActivityForResult(mpm.createScreenCaptureIntent(), reqCode)
+    }
+
     private fun startBroadcast() {
         if (findViewById<Spinner>(R.id.srcSel).selectedItemPosition == 1) {
             // PARTILHA DE ECRÃ: 1º o consentimento do sistema; o arranque real
@@ -894,12 +1202,12 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         @Suppress("DEPRECATION")
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode !in listOf(REQ_SCREEN, REQ_SCREEN_SWITCH, REQ_SCREEN_CALL, REQ_SCREEN_MEET, REQ_SCREEN_MEET_SWITCH)) return
+        if (requestCode !in listOf(REQ_SCREEN, REQ_SCREEN_SWITCH, REQ_SCREEN_CALL, REQ_SCREEN_CALL_START, REQ_SCREEN_MEET, REQ_SCREEN_MEET_SWITCH)) return
         if (resultCode != RESULT_OK || data == null) { toast("Screen share cancelled."); return }
         // Android 14+: o FGS de tipo mediaProjection TEM de estar ativo ANTES
         // de obter o MediaProjection — (re)arranca o serviço e espera-o assentar
         ensureNotifPerm()
-        val svcMode = if (requestCode in listOf(REQ_SCREEN_CALL, REQ_SCREEN_MEET, REQ_SCREEN_MEET_SWITCH)) "call-screen" else "screen"
+        val svcMode = if (requestCode in listOf(REQ_SCREEN_CALL, REQ_SCREEN_CALL_START, REQ_SCREEN_MEET, REQ_SCREEN_MEET_SWITCH)) "call-screen" else "screen"
         if (requestCode == REQ_SCREEN) bridge.monitorStop()
         startForegroundService(Intent(this, LiveService::class.java).putExtra("mode", svcMode))
         ui.postDelayed({
@@ -910,6 +1218,7 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
                     REQ_SCREEN -> beginBroadcastSession(mp)
                     REQ_SCREEN_SWITCH -> switchBroadcastToScreen(mp)
                     REQ_SCREEN_CALL -> switchCallToScreen(mp)
+                    REQ_SCREEN_CALL_START -> startCall(pendingCfgRole ?: "host", mp)
                     REQ_SCREEN_MEET -> startMeeting(mp, camOff = false)
                     REQ_SCREEN_MEET_SWITCH -> switchMeetToScreen(mp)
                 }
@@ -965,6 +1274,7 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
         callW = w; callH = h; callSensor = 0
         callBroadcaster?.setVideoSource(null, mp, w, h)
         findViewById<View>(R.id.cFlipBtn).visibility = View.GONE
+        resetCallTorch() // sem lanterna na partilha de ecrã
         routeCallSurfaces() // re-fixa o buffer + aspects + espelho
         enableScreenOrientation(true)
     }
@@ -973,12 +1283,12 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
         callIsScreen = false
         enableScreenOrientation(false)
         startForegroundService(Intent(this, LiveService::class.java).putExtra("mode", "call"))
-        val q = CALL_Q.getOrNull(prefs().getInt("callQ", 1))?.second ?: Triple(640, 480, 1_200_000)
-        callW = q.first; callH = q.second
+        callW = cfgW; callH = cfgH
         val camId = callCamId ?: camOpts.firstOrNull { it.second.startsWith("Front") }?.first
         callCamId = camId
         callBroadcaster?.setVideoSource(camId, null, callW, callH)
         findViewById<View>(R.id.cFlipBtn).visibility = View.VISIBLE
+        refreshCallTorchBtn() // volta o botão (se a câmara tiver flash)
         routeCallSurfaces()
     }
 
@@ -994,11 +1304,9 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
         val camId = camOpts.getOrNull(camPos)?.first?.ifEmpty { null }
         bcastCamId = camId ?: camOpts.firstOrNull { it.second.startsWith("Back") }?.first
         val bitrate = bitrateOf(findViewById<SeekBar>(R.id.bitrate).progress)
-        val kfMs = kfOf(findViewById<SeekBar>(R.id.kf).progress)
+        val kfMs = KF_MS
         val abrPos = findViewById<Spinner>(R.id.audioSel).selectedItemPosition
         val audioBitrate = ABR.getOrNull(abrPos)?.second ?: 64_000
-        // single-partition é um modo GLOBAL (página Network), não do broadcast
-        val onePart = prefs().getBoolean("onePart", false)
         prefs().edit().putInt("audioBr", abrPos).apply()
 
         if (!isScreenShare) {
@@ -1013,10 +1321,10 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
         findViewById<TextView>(R.id.zoomChip).text = "1.0×"
         findViewById<View>(R.id.bControls).visibility = View.VISIBLE
         findViewById<View>(R.id.bTopBar).visibility = View.VISIBLE
-        findViewById<View>(R.id.bConsoleBtn).visibility = View.VISIBLE
         findViewById<View>(R.id.stopBtn).visibility = View.VISIBLE
         findViewById<TextView>(R.id.bStatus).text = if (isScreenShare) "sharing screen" else ""
-        findViewById<TextView>(R.id.bMeter).text = "${h}p · %.1f Mbps".format(bitrate / 1e6)
+        // medidor uniforme: emissão sobe (↑); download fica "—"
+        resetMeter(up = true, res = resLabel(w, h))
         // sem câmara não há flip; torch/zoom são geridos pelo onCameraInfo
         findViewById<View>(R.id.bFlipBtn).visibility = if (isScreenShare) View.GONE else View.VISIBLE
         bcastW = w; bcastH = h
@@ -1035,23 +1343,23 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
                 if (isScreenShare) null else sv.holder.surface,
                 w, h, bitrate, kfMs,
                 if (isScreenShare) null else camId, audioBitrate,
-                singlePartition = onePart,
+                singlePartition = true, // single-partition é o único modo
                 screenProjection = projection,
                 onStats = { s -> runOnUiThread { lastBStats = s; renderConsole() } },
-                onError = { e -> runOnUiThread { toast(e); findViewById<TextView>(R.id.bStatus).text = e } },
+                onError = { e -> runOnUiThread { toast(e); transientStatus(R.id.bStatus, e) } },
                 onCameraInfo = { so, hasTorch, minZ, maxZ -> runOnUiThread {
                     bcastSensor = so; applyPreviewAspect()
                     minZoom = minZ; maxZoom = maxZ
-                    findViewById<View>(R.id.torchBtn).visibility = if (hasTorch) View.VISIBLE else View.GONE
+                    findViewById<View>(R.id.torchBtn).visibility = if (!isScreenShare) View.VISIBLE else View.GONE
                     findViewById<View>(R.id.zoomChip).visibility =
                         if (maxZ > 1.05f || minZ < 0.95f) View.VISIBLE else View.GONE
                 } },
-                onMeter = { tx, br -> runOnUiThread {
-                    findViewById<TextView>(R.id.bMeter).text = "${h}p · %.1f Mbps · ↑%.2f".format(br, tx)
-                } }
+                onMeter = { _, br, fps -> runOnUiThread { setMeterBr(br); setMeterFps(fps) } }
             ).also {
                 it.encPassword = findViewById<android.widget.EditText>(R.id.bPassEdit)
                     .text.toString().ifEmpty { null }
+                // fps escolhido (partilha de ecrã) — definido antes de start()
+                it.maxFps = prefs().getInt("screenFps", 30)
                 it.displayRotationDeg = displayRotationDeg(); it.start()
             }
         }
@@ -1119,6 +1427,7 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
     }
 
     private fun stopBroadcast() {
+        exitScreenFlash()
         enableScreenOrientation(false)
         // Teardown joins encoder/camera threads — off the main thread (blocking
         // it swallows input events and can ANR).
@@ -1148,7 +1457,8 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
         findViewById<View>(R.id.volPanel).visibility = View.GONE
         setWatchControlsVisible(true)
         findViewById<TextView>(R.id.wStatus).text = "waiting for signal…"
-        findViewById<TextView>(R.id.wMeter).text = ""
+        // medidor uniforme: Watch desce (↓); resolução chega no onVideoSize
+        resetMeter(up = false)
         findViewById<View>(R.id.wSpinner).visibility = View.VISIBLE
         findViewById<AspectFrameLayout>(R.id.watchBox).setAspect(16, 9) // until the real size arrives
         val sv = findViewById<SurfaceView>(R.id.watchSurface)
@@ -1163,9 +1473,12 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
                         s.contains("buffer") || s.contains("reconnect")
                     findViewById<View>(R.id.wSpinner).visibility = if (buffering) View.VISIBLE else View.GONE
                 } },
-                onStats = { s -> runOnUiThread { lastWStats = s; renderConsole() } },
-                onVideoSize = { w, h -> runOnUiThread { findViewById<AspectFrameLayout>(R.id.watchBox).setAspect(w, h) } },
-                onMeter = { rx -> runOnUiThread { findViewById<TextView>(R.id.wMeter).text = "↓ %.2f Mbps".format(rx) } }
+                onStats = { s -> runOnUiThread { lastWStats = "↓ · $s"; renderConsole() } },
+                onVideoSize = { w, h -> runOnUiThread {
+                    findViewById<AspectFrameLayout>(R.id.watchBox).setAspect(w, h); setMeterRes(resLabel(w, h)) } },
+                // watcher puro: fps de decode e bitrate ANUNCIADO pelo emissor
+                // (o ↑/↓ do medidor vem do tráfego real da ponte, não daqui)
+                onMeter = { _, fps, br -> runOnUiThread { setMeterFps(fps); setMeterBr(br) } }
             ).also { it.encPassword = encPass; it.start(); applyVolume() }
         }
         if (sv.holder.surface?.isValid == true) begin()
@@ -1242,6 +1555,7 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
                 callSwapped = !callSwapped
                 routeCallSurfaces()
+                applyCallCamPh() // a cobre segue a superfície com a câmara
                 return true
             }
             override fun onDoubleTap(e: MotionEvent): Boolean {
@@ -1265,21 +1579,100 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
                 return true
             }
         })
-        page.setOnTouchListener { _, ev -> scale.onTouchEvent(ev); true }
+        // toque simples no ecrã da chamada = mostrar/esconder overlay (como no LIVE)
+        val tap = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                if (isConsoleOpen()) toggleConsole() else setCallControlsVisible(!controlsVisible)
+                return true
+            }
+        })
+        page.setOnTouchListener { _, ev -> scale.onTouchEvent(ev); tap.onTouchEvent(ev); true }
     }
 
     /** Troca frontal↔traseira sem quebrar a transmissão (chamada). */
+    /** Toque LONGO no botão de trocar câmara: menu com TODAS as câmaras do
+     *  dispositivo (o toque curto mantém a troca rápida frontal↔traseira). */
+    private fun showCameraMenu(anchor: View, current: String?, onPick: (String) -> Unit) {
+        if (camOpts.isEmpty()) camOpts = enumCameras()
+        val cams = camOpts.filter { it.first.isNotEmpty() }
+        if (cams.size < 2) return
+        val pm = android.widget.PopupMenu(this, anchor)
+        cams.forEachIndexed { i, c -> pm.menu.add(0, i, i, c.second + if (c.first == current) "  ✓" else "") }
+        pm.setOnMenuItemClickListener { mi -> onPick(cams[mi.itemId].first); true }
+        pm.show()
+    }
+
     private fun flipCallCamera() {
         val curFront = camOpts.firstOrNull { it.first == callCamId }?.second?.startsWith("Front") == true
         val next = camOpts.firstOrNull { it.first.isNotEmpty() && it.second.startsWith("Front") != curFront } ?: return
         callCamId = next.first
         callZoom = 1f
         callBroadcaster?.switchCamera(next.first)
+        resetCallTorch() // a lanterna não sobrevive à troca de câmara
         routeCallSurfaces() // atualiza o espelho da frontal
     }
 
-    private fun startCall(role: String) {
+    /** CÂMARA OFF/ON na chamada (paridade com o Meeting): off fecha a fonte de
+     *  vídeo (só áudio publica) e mostra placeholder; on reabre a câmara. */
+    private fun toggleCallCam() {
+        if (callBroadcaster == null) return
+        if (!callCamOff) {
+            callCamOff = true
+            callBroadcaster?.stopVideoSource()
+        } else {
+            callCamOff = false
+            callBroadcaster?.setVideoSource(callCamId, null, callW, callH)
+        }
+        styleToggle(R.id.cCamBtn, callCamOff, if (callCamOff) R.drawable.ic_cam_off else R.drawable.ic_cam)
+        findViewById<View>(R.id.cFlipBtn).visibility = if (callCamOff) View.GONE else View.VISIBLE
+        resetCallTorch() // câmara off apaga a lanterna e esconde o botão
+        applyCallCamPh()
+        publishCallCam() // avisa o par (mostra placeholder do nosso lado nele)
+    }
+
+    /** Envia o estado da nossa câmara ao par pela partição de áudio (flag 0xC3).
+     *  Repete algumas vezes: a mensagem é única (sem keyframe) e pode perder-se. */
+    private fun publishCallCam() {
+        val json = org.json.JSONObject().put("t", "cam").put("on", !callCamOff).toString()
+        for (i in 0..2) ui.postDelayed({ callBroadcaster?.publishControl(json) }, i * 400L)
+    }
+
+    /** Cobres de câmara-cortada. A superfície principal mostra o REMOTO (normal) ou
+     *  a NOSSA câmara (com swap); o PiP mostra o inverso — a cobre segue quem tem a
+     *  câmara cortada em cada superfície. */
+    private fun applyCallCamPh() {
+        val mainOff = if (callSwapped) callCamOff else callPeerCamOff
+        val pipOff = if (callSwapped) callPeerCamOff else callCamOff
+        findViewById<View>(R.id.cMainPh).visibility = if (mainOff) View.VISIBLE else View.GONE
+        findViewById<View>(R.id.cLocalPh).visibility = if (pipOff) View.VISIBLE else View.GONE
+    }
+
+    /** Botão de lanterna (Call): visível sempre que a câmara está ativa (nem ecrã
+     *  nem off) — na traseira usa o LED, na frontal o LED traseiro (livre). */
+    private fun refreshCallTorchBtn() {
+        findViewById<View>(R.id.cTorchBtn).visibility =
+            if (!callIsScreen && !callCamOff) View.VISIBLE else View.GONE
+    }
+    private fun resetCallTorch() {
+        callTorchOn = false
+        if (screenFlashPage == R.id.pageCall) exitScreenFlash()
+        styleToggle(R.id.cTorchBtn, false, R.drawable.ic_flash)
+        refreshCallTorchBtn()
+    }
+    private fun refreshMeetTorchBtn() {
+        findViewById<View>(R.id.meetTorchBtn).visibility =
+            if (!meetIsScreen && !meetCamOff) View.VISIBLE else View.GONE
+    }
+    private fun resetMeetTorch() {
+        meetTorchOn = false
+        if (screenFlashPage == R.id.pageMeet) exitScreenFlash()
+        styleToggle(R.id.meetTorchBtn, false, R.drawable.ic_flash)
+        refreshMeetTorchBtn()
+    }
+
+    private fun startCall(role: String, screenProj: android.media.projection.MediaProjection? = null) {
         ensureNotifPerm()
+        setCommAudioRoute(true) // voz no altifalante (mic VOICE_COMMUNICATION ativo)
         callRole = role
         bridge.callStart(role) // define partições cv/ca/rv/ra + proxies de publish
         startForegroundService(Intent(this, LiveService::class.java).putExtra("mode", "call"))
@@ -1288,19 +1681,32 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
         styleToggle(R.id.cMicBtn, false, R.drawable.ic_mic)
         findViewById<TextView>(R.id.cStatus).text = "$role · waiting for peer…"
         findViewById<View>(R.id.cSpinner).visibility = View.VISIBLE
+        lastCStatsUp = ""; lastCStatsDn = ""; netLine = ""
+        setCallControlsVisible(true)
 
-        // qualidade escolhida no diálogo + câmara FRONTAL por omissão
-        val q = CALL_Q.getOrNull(prefs().getInt("callQ", 1))?.second ?: Triple(640, 480, 1_200_000)
-        callW = q.first; callH = q.second
-        val audioBr = CALL_A.getOrNull(prefs().getInt("callA", 0))?.second ?: 32_000
+        // config unificada (mesma página do LIVE): câmara ou partilha de ecrã
         if (camOpts.isEmpty()) camOpts = enumCameras()
-        callCamId = camOpts.firstOrNull { it.second.startsWith("Front") }?.first
-            ?: camOpts.firstOrNull()?.first
-        // estado do swap/PiP limpo a cada chamada
-        callIsScreen = false
-        findViewById<View>(R.id.cFlipBtn).visibility = View.VISIBLE
+        callIsScreen = cfgScreen && screenProj != null
+        if (callIsScreen) {
+            val (sw, sh) = screenCaptureDims(minOf(cfgW, cfgH))
+            callW = sw; callH = sh; callSensor = 0; callCamId = null
+        } else {
+            callW = cfgW; callH = cfgH
+            callCamId = cfgCamId ?: camOpts.firstOrNull { it.second.startsWith("Front") }?.first
+                ?: camOpts.firstOrNull()?.first
+        }
+        val audioBr = cfgAudioBr
+        // medidor uniforme: mostra a NOSSA resolução de emissão; ↑ upload / ↓ download
+        resetMeter(up = true, res = resLabel(callW, callH))
+        findViewById<View>(R.id.cFlipBtn).visibility = if (callIsScreen) View.GONE else View.VISIBLE
         callSwapped = false; callZoom = 1f; callMinZoom = 1f; callMaxZoom = 1f
         pipScaleIdx = 0; callRemoteW = 3; callRemoteH = 4
+        // estado FIT/FILL + câmara-cortada limpo a cada chamada
+        callFill = false; callCamOff = false; callPeerCamOff = false
+        findViewById<TextView>(R.id.cFitBtn).text = "FIT"
+        findViewById<AspectFrameLayout>(R.id.callRemoteBox).fillMode = false
+        styleToggle(R.id.cCamBtn, false, R.drawable.ic_cam)
+        applyCallCamPh()
         findViewById<View>(R.id.callLocalBox).apply { translationX = 0f; translationY = 0f }
         // buffer da câmara no tamanho de captura desde o arranque (aspect fiel)
         findViewById<SurfaceView>(R.id.callLocalSurface).holder.setFixedSize(callW, callH)
@@ -1312,15 +1718,24 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
             if (callViewer != null) return@beginV
             callViewer = Viewer(
                 bridge, rsv.holder.surface,
-                kindVideo = "rv", kindAudio = "ra", baseTargetMs = 250,
+                kindVideo = "rv", kindAudio = "ra", baseTargetMs = 180, commAudio = true,
                 onState = { s -> runOnUiThread {
                     findViewById<TextView>(R.id.cStatus).text = s
                     val waiting = s.contains("waiting") || s.contains("stabiliz") ||
                         s.contains("buffer") || s.contains("reconnect")
                     findViewById<View>(R.id.cSpinner).visibility = if (waiting) View.VISIBLE else View.GONE
                 } },
-                onStats = { s -> runOnUiThread { findViewById<TextView>(R.id.cStats).text = s } },
-                onVideoSize = { w, h -> runOnUiThread { callRemoteW = w; callRemoteH = h; applyCallAspects() } }
+                onStats = { s -> runOnUiThread { lastCStatsDn = "↓ peer · $s"; renderConsole() } },
+                onVideoSize = { w, h -> runOnUiThread {
+                    callRemoteW = w; callRemoteH = h; applyCallAspects()
+                    // vídeo do par voltou (keyframe) ⇒ câmara ligada, mesmo que o
+                    // flag "on" se tenha perdido
+                    if (callPeerCamOff) { callPeerCamOff = false; applyCallCamPh() }
+                } },
+                // na chamada, res/bitrate/fps vêm do NOSSO emissor e o ↑/↓ do
+                // tráfego real da ponte — este callback já não alimenta o medidor
+                onMeter = { _, _, _ -> },
+                onCamState = { on -> runOnUiThread { callPeerCamOff = !on; applyCallCamPh() } }
             ).also { it.encPassword = callPass; it.start() }
         }
         if (rsv.holder.surface?.isValid == true) beginViewer()
@@ -1335,18 +1750,22 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
         val beginBcast = beginB@{
             if (callBroadcaster != null) return@beginB
             callBroadcaster = Broadcaster(
-                this, bridge, lsv.holder.surface, callW, callH, q.third, 1000, callCamId, audioBr,
+                this, bridge, if (callIsScreen) null else lsv.holder.surface, callW, callH, cfgBr, cfgKfMs,
+                if (callIsScreen) null else callCamId, audioBr,
                 kindVideo = "cv", kindAudio = "ca", manageOverlays = false,
-                onStats = {},
-                onError = { e -> runOnUiThread { toast(e); findViewById<TextView>(R.id.cStatus).text = e } },
-                onCameraInfo = { so, _, minZ, maxZ -> runOnUiThread {
+                screenProjection = screenProj,
+                onStats = { s -> runOnUiThread { lastCStatsUp = "↑ me · $s"; renderConsole() } },
+                onError = { e -> runOnUiThread { toast(e); transientStatus(R.id.cStatus, e) } },
+                onCameraInfo = { so, hasTorch, minZ, maxZ -> runOnUiThread {
                     callSensor = so; callMinZoom = minZ; callMaxZoom = maxZ
                     if (callZoom < minZ || callZoom > maxZ) callZoom = 1f
+                    callHasTorch = hasTorch; refreshCallTorchBtn()
                     applyCallAspects()
-                } }
-            ).also { it.encPassword = callPass; it.displayRotationDeg = displayRotationDeg(); it.start() }
+                } },
+                onMeter = { _, br, fps -> runOnUiThread { setMeterBr(br); setMeterFps(fps) } }
+            ).also { it.encPassword = callPass; it.maxFps = cfgFps; it.displayRotationDeg = displayRotationDeg(); it.start() }
         }
-        if (lsv.holder.surface?.isValid == true) beginBcast()
+        if (callIsScreen || lsv.holder.surface?.isValid == true) beginBcast()
         else lsv.holder.addCallback(object : SurfaceHolder.Callback {
             override fun surfaceCreated(h: SurfaceHolder) { beginBcast(); lsv.holder.removeCallback(this) }
             override fun surfaceChanged(h: SurfaceHolder, f: Int, w2: Int, h2: Int) {}
@@ -1355,7 +1774,9 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
     }
 
     private fun stopCall() {
+        exitScreenFlash()
         enableScreenOrientation(false)
+        setCommAudioRoute(false)
         val b = callBroadcaster; val v = callViewer
         if (b == null && v == null) return
         callBroadcaster = null; callViewer = null; callPass = null
@@ -1365,6 +1786,7 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
             bridge.callStop()
         }
         stopService(Intent(this, LiveService::class.java))
+        lastCStatsUp = ""; lastCStatsDn = ""; netLine = ""
         findViewById<TextView>(R.id.cStats).text = ""
         findViewById<View>(R.id.cStats).visibility = View.GONE
     }
@@ -1372,8 +1794,257 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
     // ================= MEETING =================
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
+    // ------------- Definições EM SESSÃO (engrenagem do overlay) -----------------
+    // Mesmas opções do menu inicial, aplicadas AO VIVO sem sair da transmissão.
+    // bitrate/fps/áudio são imediatos; a resolução reconstrói o encoder (~0,5s,
+    // os viewers re-sincronizam no keyframe seguinte). Não existe no LIVE watcher.
+    /** >30fps só existe via sessão CONSTRAINED HIGH-SPEED, que depende da câmara
+     *  E da resolução (neste telemóvel só 720p na traseira). A frontal está fora:
+     *  não tem high-speed utilizável e a tentativa derruba o serviço de câmara. */
+    private fun supportsHighFps(camId: String?, w: Int, h: Int): Boolean {
+        val id = camId ?: return false
+        return try {
+            val mgr = getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager
+            val ch = mgr.getCameraCharacteristics(id)
+            if (ch.get(android.hardware.camera2.CameraCharacteristics.LENS_FACING) ==
+                android.hardware.camera2.CameraCharacteristics.LENS_FACING_FRONT) return false
+            val map = ch.get(android.hardware.camera2.CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                ?: return false
+            val size = android.util.Size(w, h)
+            if (!map.highSpeedVideoSizes.contains(size)) return false
+            map.getHighSpeedVideoFpsRangesFor(size).any { it.upper >= 60 }
+        } catch (e: Exception) { false }
+    }
+
+    /** Câmara em uso no modo atual (para saber o que o hardware suporta). */
+    private fun currentCamId(): String? = when (currentPage) {
+        "call" -> callCamId; "meet" -> meetCamId; else -> bcastCamId
+    }
+
+    private fun activeBroadcaster(): Broadcaster? = when (currentPage) {
+        "broadcast" -> broadcaster
+        "call" -> callBroadcaster
+        "meet" -> meetBroadcaster
+        else -> null
+    }
+
+    /** Muda a resolução em pleno live: reconstrói a fonte com as novas dimensões.
+     *  CRÍTICO: o buffer do preview está fixo com setFixedSize — sem o atualizar,
+     *  a câmara escreve o aspeto novo num buffer antigo (480p 4:3 ↔ 720p 16:9) e a
+     *  imagem sai deformada. O surfaceChanged daí resultante refaz a sessão. */
+    private fun applySessionRes(w: Int, h: Int) {
+        android.util.Log.d("SessionCfg", "applySessionRes page=$currentPage → ${w}x${h}")
+        when (currentPage) {
+            "broadcast" -> { if (isScreenShare) return; bcastW = w; bcastH = h; bcastCamW = w; bcastCamH = h
+                findViewById<SurfaceView>(R.id.previewSurface).holder.setFixedSize(w, h)
+                broadcaster?.setVideoSource(bcastCamId, null, w, h); applyPreviewAspect() }
+            "call" -> { if (callIsScreen) return; callW = w; callH = h
+                findViewById<SurfaceView>(R.id.callLocalSurface).holder.setFixedSize(w, h)
+                callBroadcaster?.setVideoSource(callCamId, null, w, h); applyCallAspects() }
+            "meet" -> { if (meetIsScreen || meetCamOff) return; meetW = w; meetH = h
+                findViewById<SurfaceView>(R.id.meetLocalSurface).holder.setFixedSize(w, h)
+                meetBroadcaster?.setVideoSource(meetCamId, null, w, h); applyMeetLocalAspect() }
+        }
+        setMeterRes(resLabel(w, h))
+    }
+
+    private fun showSessionSettings() {
+        val b = activeBroadcaster() ?: return
+        val pad = dp(20)
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(pad, pad, pad, pad)
+        }
+        fun label(t: String) = TextView(this).apply {
+            text = t; setTextColor(0xFFFFFFFF.toInt()); textSize = 13f
+            setPadding(0, dp(12), 0, dp(4))
+        }
+        fun <T> spinner(items: List<String>, sel: Int, onPick: (Int) -> Unit) = Spinner(this).apply {
+            adapter = android.widget.ArrayAdapter(this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item, items)
+            setSelection(sel, false)
+            onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(p: android.widget.AdapterView<*>?, v: View?, pos: Int, id: Long) = onPick(pos)
+                override fun onNothingSelected(p: android.widget.AdapterView<*>?) {}
+            }
+        }
+
+        // resolução (indisponível em partilha de ecrã / câmara off)
+        val screenNow = (currentPage == "broadcast" && isScreenShare) ||
+            (currentPage == "call" && callIsScreen) ||
+            (currentPage == "meet" && (meetIsScreen || meetCamOff))
+        val curW = when (currentPage) { "call" -> callW; "meet" -> meetW; else -> bcastW }
+        val curH = when (currentPage) { "call" -> callH; "meet" -> meetH; else -> bcastH }
+        // fps: só se oferece o que a câmara ATUAL suporta nesta resolução — a lista
+        // é reconstruída quando a resolução muda (60 desaparece onde não existe).
+        val fpsLabel = label("Frame rate")
+        val fpsSpin = Spinner(this)
+        var fpsOpts = SCREEN_FPS.filter { it <= 30 || supportsHighFps(currentCamId(), curW, curH) }
+        fun bindFps(opts: List<Int>) {
+            fpsOpts = opts
+            fpsSpin.adapter = android.widget.ArrayAdapter(this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item, opts.map { "$it fps" })
+            fpsSpin.setSelection(opts.indexOf(sessionFps).coerceAtLeast(0), false)
+            // dica DERIVADA do hardware: diz em que resoluções esta câmara faz 60
+            // (ou que não faz de todo) em vez de assumir as deste telemóvel.
+            fpsLabel.text = if (opts.size > 1) "Frame rate" else {
+                val cam = currentCamId()
+                val can = RES.filter { supportsHighFps(cam, it.second.first, it.second.second) }
+                if (can.isEmpty()) "Frame rate · 60 fps not available on this camera"
+                else "Frame rate · 60 fps needs " + can.joinToString("/") { it.first.substringBefore(" ") }
+            }
+        }
+
+        box.addView(label(if (screenNow) "Resolution (locked while sharing screen)" else "Resolution"))
+        box.addView(spinner<Int>(RES.map { it.first }, RES.indexOfFirst { it.second == Pair(curW, curH) }.coerceAtLeast(0)) { pos ->
+            if (screenNow) return@spinner
+            val nw = RES[pos].second.first; val nh = RES[pos].second.second
+            applySessionRes(nw, nh)
+            // a nova resolução pode não ter 60fps → cair para 30 e refazer a lista
+            val ok = SCREEN_FPS.filter { it <= 30 || supportsHighFps(currentCamId(), nw, nh) }
+            if (sessionFps !in ok) { sessionFps = 30; b.changeMaxFps(30); setMeterFps(30) }
+            bindFps(ok)
+        }.apply { isEnabled = !screenNow })
+
+        // bitrate de vídeo — imediato
+        val brLabel = label("Video bitrate")
+        box.addView(brLabel)
+        val curBrProg = ((sessionBr - 500_000) / 100_000).coerceIn(0, 75)
+        brLabel.text = "Video bitrate · ${"%.1f".format(sessionBr / 1e6)} Mbps"
+        box.addView(SeekBar(this).apply {
+            max = 75; progress = curBrProg
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
+                    sessionBr = bitrateOf(p)
+                    brLabel.text = "Video bitrate · ${"%.1f".format(sessionBr / 1e6)} Mbps"
+                    if (fromUser) b.changeBitrate(sessionBr)
+                }
+                override fun onStartTrackingTouch(s: SeekBar?) {}
+                override fun onStopTrackingTouch(s: SeekBar?) {}
+            })
+        })
+
+        // fps — imediato (lista já filtrada pelo que o hardware suporta)
+        bindFps(fpsOpts)
+        fpsSpin.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(p: android.widget.AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                val f = fpsOpts.getOrNull(pos) ?: return
+                if (f == sessionFps) return
+                sessionFps = f; b.changeMaxFps(f); setMeterFps(f)
+            }
+            override fun onNothingSelected(p: android.widget.AdapterView<*>?) {}
+        }
+        box.addView(fpsLabel)
+        box.addView(fpsSpin)
+
+        // bitrate de áudio — reinicia só a thread de áudio
+        box.addView(label("Audio bitrate"))
+        box.addView(spinner<Int>(ABR.map { it.first },
+            ABR.indexOfFirst { it.second == sessionAbr }.coerceAtLeast(0)) { pos ->
+            sessionAbr = ABR[pos].second; b.changeAudioBitrate(sessionAbr)
+        })
+
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Settings")
+            .setView(android.widget.ScrollView(this).apply { addView(box) })
+            .setPositiveButton("Done", null)
+            .show()
+        bumpAutoHide()
+    }
+
+    // ---------------- Flash: LED (traseiro) ou Screen flash (ecrã branco) --------
+    // A frontal não tem LED, por isso o "flash" dela ilumina a cara com o ECRÃ a
+    // branco no máximo de brilho. Fonte por modo: AUTO (frontal→ecrã, traseira→LED)
+    // ou forçada pelo dropdown de toque longo.
+    private val FLASH_AUTO = 0; private val FLASH_LED = 1; private val FLASH_SCREEN = 2
+    private var bcastFlashSrc = FLASH_AUTO
+    private var callFlashSrc = FLASH_AUTO
+    private var meetFlashSrc = FLASH_AUTO
+    private var screenFlashPage = 0                      // pageId ativo, 0 = nenhum
+    private val flashSaved = HashMap<View, Pair<Int, Int>>()
+
+    /** true = usar o ecrã branco; false = LED traseiro. */
+    private fun flashIsScreen(src: Int, front: Boolean) =
+        src == FLASH_SCREEN || (src == FLASH_AUTO && front)
+
+    /** Ecrã branco no máximo de brilho, com os previews encolhidos (o "buraco" da
+     *  SurfaceView fica pequeno → mostra a câmara; o resto da página fica branco). */
+    private fun enterScreenFlash(pageId: Int, previews: List<View>) {
+        if (screenFlashPage == pageId) return
+        exitScreenFlash() // sai de outro se estiver
+        screenFlashPage = pageId
+        val lp = window.attributes; lp.screenBrightness = 1f; window.attributes = lp
+        findViewById<View>(pageId).setBackgroundColor(android.graphics.Color.WHITE)
+        previews.forEach { v ->
+            flashSaved[v] = v.layoutParams.width to v.layoutParams.height
+            v.layoutParams = v.layoutParams.apply { width = dp(150); height = dp(210) }
+        }
+    }
+
+    private fun exitScreenFlash() {
+        if (screenFlashPage == 0) return
+        val page = findViewById<View>(screenFlashPage)
+        screenFlashPage = 0
+        val lp = window.attributes
+        lp.screenBrightness = android.view.WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        window.attributes = lp
+        // as três páginas (Broadcast/Call/Meet) são #000000 — repõe preto (as
+        // barras de letterbox voltam a ser pretas em vez de brancas).
+        page.setBackgroundColor(android.graphics.Color.BLACK)
+        flashSaved.forEach { (v, wh) -> v.layoutParams = v.layoutParams.apply { width = wh.first; height = wh.second } }
+        flashSaved.clear()
+    }
+
+    /** Dropdown de toque longo: escolher a fonte do flash. */
+    private fun showFlashMenu(anchor: View, current: Int, onPick: (Int) -> Unit) {
+        val pm = android.widget.PopupMenu(this, anchor)
+        pm.menu.add(0, FLASH_LED, 0, "LED (traseiro)" + if (current == FLASH_LED) "  ✓" else "")
+        pm.menu.add(0, FLASH_SCREEN, 1, "Screen flash" + if (current == FLASH_SCREEN) "  ✓" else "")
+        pm.setOnMenuItemClickListener { mi -> onPick(mi.itemId); true }
+        pm.show()
+    }
+
+    private fun applyBcastFlash() {
+        val front = camOpts.firstOrNull { it.first == bcastCamId }?.second?.startsWith("Front") == true
+        if (flashIsScreen(bcastFlashSrc, front)) {
+            broadcaster?.setTorch(false)
+            if (torchOn) enterScreenFlash(R.id.pageBroadcast, listOf(findViewById(R.id.previewBox)))
+            else exitScreenFlash()
+        } else {
+            exitScreenFlash()
+            broadcaster?.setTorch(torchOn)
+        }
+        styleToggle(R.id.torchBtn, torchOn, R.drawable.ic_flash)
+    }
+
+    private fun applyCallFlash() {
+        val front = camOpts.firstOrNull { it.first == callCamId }?.second?.startsWith("Front") == true
+        if (flashIsScreen(callFlashSrc, front)) {
+            callBroadcaster?.setTorch(false)
+            if (callTorchOn) enterScreenFlash(R.id.pageCall, listOf(findViewById(R.id.callRemoteBox)))
+            else exitScreenFlash()
+        } else {
+            exitScreenFlash()
+            callBroadcaster?.setTorch(callTorchOn)
+        }
+        styleToggle(R.id.cTorchBtn, callTorchOn, R.drawable.ic_flash)
+    }
+
+    private fun applyMeetFlash() {
+        val front = camOpts.firstOrNull { it.first == meetCamId }?.second?.startsWith("Front") == true
+        if (flashIsScreen(meetFlashSrc, front)) {
+            meetBroadcaster?.setTorch(false)
+            if (meetTorchOn) enterScreenFlash(R.id.pageMeet, listOf(findViewById(R.id.meetLocalAspect)))
+            else exitScreenFlash()
+        } else {
+            exitScreenFlash()
+            meetBroadcaster?.setTorch(meetTorchOn)
+        }
+        styleToggle(R.id.meetTorchBtn, meetTorchOn, R.drawable.ic_flash)
+    }
+
     private fun startMeeting(screenProj: android.media.projection.MediaProjection? = null, camOff: Boolean = false) {
         ensureNotifPerm()
+        setCommAudioRoute(true) // voz no altifalante (mic VOICE_COMMUNICATION ativo)
         // fonte=ecrã: o FGS mediaProjection já foi arrancado pelo onActivityResult
         if (screenProj == null) startForegroundService(Intent(this, LiveService::class.java).putExtra("mode", "call"))
         show("meet")
@@ -1386,15 +2057,19 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
         findViewById<View>(R.id.meetFlipBtn).visibility = if (meetCamOff || meetIsScreen) View.GONE else View.VISIBLE
         findViewById<TextView>(R.id.meetLocalLab).text = "you"
         findViewById<TextView>(R.id.meetStats).text = ""
+        lastMeetStats = ""; netLine = ""
+        setMeetControlsVisible(true)
         clearMeetTiles()
 
-        val q = MEET_Q.getOrNull(prefs().getInt("meetQ", 1))?.second ?: Triple(640, 480, 500_000)
+        // config unificada (mesma página do LIVE)
         if (meetIsScreen) {
-            val (w, h) = screenCaptureDims(minOf(q.first, q.second))
+            val (w, h) = screenCaptureDims(minOf(cfgW, cfgH))
             meetW = w; meetH = h; meetSensor = 0
-        } else { meetW = q.first; meetH = q.second }
+        } else { meetW = cfgW; meetH = cfgH }
+        // medidor uniforme: NOSSA resolução; ↑ upload / ↓ download total (soma feeds)
+        resetMeter(up = true, res = resLabel(meetW, meetH))
         if (camOpts.isEmpty()) camOpts = enumCameras()
-        meetCamId = camOpts.firstOrNull { it.second.startsWith("Front") }?.first
+        meetCamId = cfgCamId ?: camOpts.firstOrNull { it.second.startsWith("Front") }?.first
             ?: camOpts.firstOrNull()?.first
         findViewById<SurfaceView>(R.id.meetLocalSurface).holder.setFixedSize(meetW, meetH)
         findViewById<View>(R.id.meetScroll).visibility = View.VISIBLE
@@ -1407,12 +2082,20 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
             myId = bridgeAddr ?: java.util.UUID.randomUUID().toString(),
             onPeerAdded = { s -> runOnUiThread { addMeetTile(s) } },
             onPeerRemoved = { s -> runOnUiThread { removeMeetTile(s) } },
-            onState = { s -> runOnUiThread { findViewById<TextView>(R.id.meetStatus).text = s } },
+            // barra de topo só mostra estado/erros — o "in meeting · slot #N" foi
+            // retirado (o slot já vai no medidor/consola e no rótulo do tile local)
+            onState = { s -> runOnUiThread {
+                findViewById<TextView>(R.id.meetStatus).text = if (s.startsWith("in meeting")) "" else s
+            } },
             onSlotChosen = { s -> runOnUiThread {
                 findViewById<TextView>(R.id.meetLocalLab).text = "you · #$s"
-                startMeetBroadcaster(q.third)
+                startMeetBroadcaster(cfgBr)
             } },
             onStats = { s -> runOnUiThread { lastMeetStats = s; renderConsole() } },
+            // download total = soma do rx de todos os feeds (o upload vem do emissor)
+            // no meeting, res/bitrate/fps vêm do NOSSO emissor e o ↑/↓ do tráfego
+            // real da ponte (soma de todos os peers) — não deste callback
+            onMeter = { _ -> },
             onPeerCam = { s, cam -> runOnUiThread { meetTiles[s]?.ph?.visibility = if (cam) View.GONE else View.VISIBLE } },
             onPeerVideoSize = { s, w, h -> runOnUiThread {
                 meetTiles[s]?.let { t -> t.aw = w; t.ah = h; t.aspect.setAspect(w, h) }
@@ -1447,18 +2130,19 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
     private fun startMeetBroadcaster(bitrate: Int) {
         if (meetBroadcaster != null) return
         meetBrBase = bitrate
-        val audioBr = CALL_A.getOrNull(prefs().getInt("meetA", 0))?.second ?: 32_000
+        val audioBr = cfgAudioBr
         val lsv = findViewById<SurfaceView>(R.id.meetLocalSurface)
         val begin = b@{
             if (meetBroadcaster != null || meeting?.active != true) return@b
             meetBroadcaster = Broadcaster(
-                this, bridge, lsv.holder.surface, meetW, meetH, bitrate, 1000, meetCamId, audioBr,
+                this, bridge, lsv.holder.surface, meetW, meetH, bitrate, cfgKfMs, meetCamId, audioBr,
                 kindVideo = "ms", kindAudio = "ms", manageOverlays = false, singlePartition = true,
                 screenProjection = meetPendingProj, startWithVideo = !meetCamOff,
-                onStats = {},
+                onStats = { s -> meeting?.setSelfStats(s) },
+                onMeter = { _, br, fps -> runOnUiThread { setMeterBr(br); setMeterFps(fps) } },
                 onError = { e -> runOnUiThread { toast(e) } },
-                onCameraInfo = { so, _, _, _ -> runOnUiThread { meetSensor = so; applyMeetLocalAspect() } }
-            ).also { it.displayRotationDeg = displayRotationDeg(); it.setMicMuted(meetMicMuted); it.start() }
+                onCameraInfo = { so, hasTorch, _, _ -> runOnUiThread { meetSensor = so; meetHasTorch = hasTorch; refreshMeetTorchBtn(); applyMeetLocalAspect() } }
+            ).also { it.maxFps = cfgFps; it.displayRotationDeg = displayRotationDeg(); it.setMicMuted(meetMicMuted); it.start() }
             meetPendingProj = null
         }
         if (lsv.holder.surface?.isValid == true) begin()
@@ -1483,11 +2167,13 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
         findViewById<AspectFrameLayout>(R.id.meetLocalAspect).setAspect(w, h)
         if (meetSpotFs && meetSpotSlot == -1)
             findViewById<AspectFrameLayout>(R.id.meetFsAspect).setAspect(w, h)
+        applyMeetLocalMirror()
     }
 
     // ---- DESTAQUE: toque = 2×2; 2º toque = fullscreen; toque no fs = volta ----
     private fun meetTileTap(s: Int) {
         if (meeting == null) return
+        setMeetControlsVisible(true) // tocar num tile também revela/renova o overlay
         if (meetSpotSlot == s && !meetSpotFs) { enterMeetFs(s); return }
         meetSpotSlot = s
         applyMeetSpot()
@@ -1575,10 +2261,11 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
     /** Placeholder do tile local: câmara off = ic_cam_off; a partilhar ecrã =
      *  ic_screen (o espelho de si próprio seria recursivo). */
     private fun applyMeetLocalPh() {
-        val ph = findViewById<android.widget.ImageView>(R.id.meetLocalPh)
+        val ph = findViewById<View>(R.id.meetLocalPh)
+        val icon = findViewById<android.widget.ImageView>(R.id.meetLocalPhIcon)
         when {
-            meetCamOff -> { ph.setImageResource(R.drawable.ic_cam_off); ph.visibility = View.VISIBLE }
-            meetIsScreen -> { ph.setImageResource(R.drawable.ic_screen); ph.visibility = View.VISIBLE }
+            meetCamOff -> { icon.setImageResource(R.drawable.ic_cam_off); ph.visibility = View.VISIBLE }
+            meetIsScreen -> { icon.setImageResource(R.drawable.ic_screen); ph.visibility = View.VISIBLE }
             else -> ph.visibility = View.GONE
         }
     }
@@ -1594,25 +2281,25 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
             meeting?.setCam(false)
         } else {
             meetCamOff = false
-            val q = MEET_Q.getOrNull(prefs().getInt("meetQ", 1))?.second ?: Triple(640, 480, 500_000)
-            meetW = q.first; meetH = q.second
+            meetW = cfgW; meetH = cfgH
             meetBroadcaster?.setVideoSource(meetCamId, null, meetW, meetH)
             meeting?.setCam(true)
         }
         styleToggle(R.id.meetCamBtn, meetCamOff, if (meetCamOff) R.drawable.ic_cam_off else R.drawable.ic_cam)
         findViewById<View>(R.id.meetFlipBtn).visibility = if (meetCamOff) View.GONE else View.VISIBLE
+        resetMeetTorch() // câmara off apaga a lanterna e esconde o botão
         applyMeetLocalPh(); applyMeetLocalAspect()
     }
 
     private fun switchMeetToScreen(mp: android.media.projection.MediaProjection) {
         meetIsScreen = true
         if (meetCamOff) { meetCamOff = false; styleToggle(R.id.meetCamBtn, false, R.drawable.ic_cam) }
-        val q = MEET_Q.getOrNull(prefs().getInt("meetQ", 1))?.second ?: Triple(640, 480, 500_000)
-        val (w, h) = screenCaptureDims(minOf(q.first, q.second))
+        val (w, h) = screenCaptureDims(minOf(cfgW, cfgH))
         meetW = w; meetH = h; meetSensor = 0
         meetBroadcaster?.setVideoSource(null, mp, w, h)
         meeting?.setCam(true) // ecrã é vídeo — os peers tiram o placeholder
         findViewById<View>(R.id.meetFlipBtn).visibility = View.GONE
+        resetMeetTorch() // sem lanterna na partilha de ecrã
         applyMeetLocalPh(); applyMeetLocalAspect()
         enableScreenOrientation(true)
     }
@@ -1621,18 +2308,20 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
         meetIsScreen = false
         enableScreenOrientation(false)
         startForegroundService(Intent(this, LiveService::class.java).putExtra("mode", "call"))
-        val q = MEET_Q.getOrNull(prefs().getInt("meetQ", 1))?.second ?: Triple(640, 480, 500_000)
-        meetW = q.first; meetH = q.second
+        meetW = cfgW; meetH = cfgH
         val camId = meetCamId ?: camOpts.firstOrNull { it.second.startsWith("Front") }?.first
         meetCamId = camId
         meetBroadcaster?.setVideoSource(camId, null, meetW, meetH)
         findViewById<View>(R.id.meetFlipBtn).visibility = View.VISIBLE
+        refreshMeetTorchBtn() // volta o botão (se a câmara tiver flash)
         applyMeetLocalPh() // o aspect volta pelo onCameraInfo quando a câmara abrir
     }
 
     private fun stopMeeting() {
+        exitScreenFlash()
         val m = meeting ?: return
         meeting = null
+        setCommAudioRoute(false)
         val b = meetBroadcaster; meetBroadcaster = null
         enableScreenOrientation(false)
         meetIsScreen = false; meetCamOff = false; meetPendingProj = null
@@ -1658,6 +2347,7 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
         val next = camOpts.firstOrNull { it.first.isNotEmpty() && it.second.startsWith("Front") != curFront } ?: return
         meetCamId = next.first
         meetBroadcaster?.switchCamera(next.first)
+        resetMeetTorch() // a lanterna não sobrevive à troca de câmara
     }
 
     /** Tile dinâmico de um slot remoto: AspectFrameLayout (aspect/orientação
@@ -1684,11 +2374,18 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
             android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.MATCH_PARENT)
         aspect.addView(sv)
         tile.addView(aspect)
-        val ph = android.widget.ImageView(this)
-        ph.setImageResource(R.drawable.ic_cam_off)
-        ph.alpha = 0.7f
+        // placeholder = cobre OPACA (tapa a última frame congelada quando o peer
+        // desliga a câmara) + ícone centrado
+        val ph = android.widget.FrameLayout(this)
+        ph.setBackgroundColor(0xFF000000.toInt())
         ph.visibility = View.GONE
-        ph.layoutParams = android.widget.FrameLayout.LayoutParams(dp(44), dp(44), android.view.Gravity.CENTER)
+        ph.layoutParams = android.widget.FrameLayout.LayoutParams(
+            android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.MATCH_PARENT)
+        val phIcon = android.widget.ImageView(this)
+        phIcon.setImageResource(R.drawable.ic_cam_off)
+        phIcon.alpha = 0.7f
+        phIcon.layoutParams = android.widget.FrameLayout.LayoutParams(dp(44), dp(44), android.view.Gravity.CENTER)
+        ph.addView(phIcon)
         tile.addView(ph)
         val lab = TextView(this)
         lab.text = "#$s"
@@ -1776,12 +2473,22 @@ class MainActivity : AppCompatActivity(), StreamrBridge.Listener {
         val suffix = if (netLine.isEmpty()) "" else "\n$netLine"
         if (lastBStats.isNotEmpty()) findViewById<TextView>(R.id.bStats).text = lastBStats + suffix
         if (lastWStats.isNotEmpty()) findViewById<TextView>(R.id.wStats).text = lastWStats + suffix
+        val cStats = listOf(lastCStatsUp, lastCStatsDn).filter { it.isNotEmpty() }.joinToString("\n")
+        if (cStats.isNotEmpty()) findViewById<TextView>(R.id.cStats).text = cStats + suffix
         if (lastMeetStats.isNotEmpty()) findViewById<TextView>(R.id.meetStats).text = lastMeetStats + suffix
     }
 
     override fun onBridgeLiveState(live: Boolean) {
         liveNow = live
         findViewById<View>(R.id.liveBadge).visibility = if (live) View.VISIBLE else View.GONE
+    }
+
+    /** Tráfego REAL do transporte (soma de TODAS as ligações de peer): é isto que
+     *  o medidor mostra em qualquer modo. O payload de publish/subscribe conta uma
+     *  vez só e escondia o fan-out da malha (emissor a servir N vizinhos) e o
+     *  reencaminhamento de quem só vê (aparecia com 0 de upload). */
+    override fun onBridgeTraffic(upMbps: Double, downMbps: Double, conns: Int) {
+        setMeterTx(upMbps); setMeterRx(downMbps)
     }
 
     override fun onBridgeNetInfo(json: String) {

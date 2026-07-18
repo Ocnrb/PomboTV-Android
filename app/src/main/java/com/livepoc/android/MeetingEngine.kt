@@ -35,6 +35,8 @@ class MeetingEngine(
     /** Slot próprio escolhido (ou mudado por colisão) — arranca/atualiza o emissor. */
     private val onSlotChosen: (slot: Int) -> Unit,
     private val onStats: (String) -> Unit,
+    /** Download AGREGADO (soma do rx de todos os feeds) — medidor da barra. */
+    private val onMeter: (rxTotalMbps: Double) -> Unit = { _ -> },
     /** Estado da câmara do peer (hb cam:false → placeholder no tile). */
     private val onPeerCam: (slot: Int, cam: Boolean) -> Unit = { _, _ -> },
     /** Dimensões DE RENDER do peer (rotação já aplicada) — aspect do tile. */
@@ -62,6 +64,8 @@ class MeetingEngine(
     private val roster = HashMap<String, Entry>()  // id → (slot, lastSeen, cam)
     val viewers = ConcurrentHashMap<Int, Viewer>() // slot → viewer
     private val peerStats = HashMap<Int, String>()
+    private val peerRx = HashMap<Int, Double>()     // slot → Mbps (soma = download total)
+    @Volatile private var selfStats = ""            // stats da NOSSA emissão (↑)
     // diagnóstico da #9: tx = publishes de controlo enviados; rx = mensagens dos
     // OUTROS recebidas; echo = as minhas de volta (prova de caminho vivo).
     // rx=0 e echo=0 com tx a crescer = buraco negro no canal de presença.
@@ -196,6 +200,7 @@ class MeetingEngine(
         for (s in viewers.keys.toList()) if (s !in wanted) {
             val v = viewers.remove(s)
             peerStats.remove(s)
+            peerRx.remove(s); onMeter(peerRx.values.sum())
             thread(name = "meet-peer-stop") { try { v?.stop() } catch (e: Exception) {} }
             onPeerRemoved(s)
         }
@@ -209,10 +214,11 @@ class MeetingEngine(
         if (!active || viewers.containsKey(s)) return
         if (roster.values.none { it.slot == s }) return // já saiu entretanto
         val v = Viewer(bridge, surface,
-            kindVideo = "p$s", kindAudio = "p$s", baseTargetMs = 250,
+            kindVideo = "p$s", kindAudio = "p$s", baseTargetMs = 180, commAudio = true,
             onState = {},
             onStats = { st -> ui.post { peerStats[s] = st; renderStats() } },
-            onVideoSize = { w, h -> onPeerVideoSize(s, w, h) })
+            onVideoSize = { w, h -> onPeerVideoSize(s, w, h) },
+            onMeter = { rx, _, _ -> ui.post { peerRx[s] = rx; onMeter(peerRx.values.sum()) } })
         viewers[s] = v
         v.start()
     }
@@ -231,17 +237,18 @@ class MeetingEngine(
         for (s in viewers.keys) bridge.subscribe("p$s")
     }
 
+    /** Stats da nossa própria emissão (↑), vindos do Broadcaster do meeting. */
+    fun setSelfStats(s: String) { selfStats = s; ui.post { renderStats() } }
+
     private fun renderStats() {
-        val now = SystemClock.elapsedRealtime()
-        val sb = StringBuilder("slot=#$slot peers=${viewers.size} roster=${roster.size}")
-        sb.append("\nctrl tx=").append(ctrlTx).append(" rx=").append(ctrlRx).append(" echo=").append(ctrlEcho)
-        if (roster.isNotEmpty()) {
-            sb.append("\nroster: ").append(roster.entries.joinToString(" ") {
-                "#${it.value.slot}=${it.key.take(8)}·${"%.1f".format((now - it.value.at) / 1000.0)}s"
-            })
-        }
+        // consola UNIFORME: ↑ a NOSSA emissão · ↓ cada feed recebido
+        val sb = StringBuilder("↑ #").append(slot)
+        if (!camOn) sb.append(" (no cam)")
+        if (selfStats.isNotEmpty()) sb.append(" · ").append(selfStats.replace('\n', ' '))
         for ((s, st) in peerStats.toSortedMap())
-            sb.append("\n#").append(s).append(": ").append(st.replace('\n', ' '))
+            sb.append("\n↓ #").append(s).append(" · ").append(st.replace('\n', ' '))
+        // sem linha "presença #9": a linha "net" (ctrl=mesh/proxy N nbrs) da consola
+        // já mostra a conectividade do canal de presença — evita repetição
         onStats(sb.toString())
     }
 
@@ -251,7 +258,7 @@ class MeetingEngine(
         ctrlPub("leave")
         ui.removeCallbacksAndMessages(null)
         val vs = viewers.values.toList()
-        viewers.clear(); roster.clear(); peerStats.clear()
+        viewers.clear(); roster.clear(); peerStats.clear(); peerRx.clear()
         thread(name = "meet-stop") {
             for (v in vs) try { v.stop() } catch (e: Exception) {}
             bridge.meetStop()

@@ -38,15 +38,24 @@ class Viewer(
     // alvo mais curto (a latência conversacional manda)
     private val kindVideo: String = "video",
     private val kindAudio: String = "audio",
-    baseTargetMs: Int = 400,
+    baseTargetMs: Int = 300, // watch (live 1→N); meeting/call passam 180 (conversacional)
+    // meeting/call: áudio de VOZ (USAGE_VOICE_COMMUNICATION) para casar com o
+    // mic VOICE_COMMUNICATION — senão, com o mic ativo, o Android roteia a
+    // reprodução USAGE_MEDIA para o AURICULAR (parecia "sem som"). O watch
+    // (sem mic) fica em USAGE_MEDIA normal.
+    private val commAudio: Boolean = false,
     private val onState: (String) -> Unit,
     private val onStats: (String) -> Unit,
     private val onVideoSize: (w: Int, h: Int) -> Unit = { _, _ -> },
-    private val onMeter: (rxMbps: Double) -> Unit = {}
+    private val onMeter: (rxMbps: Double, fps: Int, brMbps: Double) -> Unit = { _, _, _ -> },
+    /** Estado da câmara do emissor (mensagem de controlo 0xC3 na chamada). */
+    private val onCamState: (on: Boolean) -> Unit = {}
 ) {
     companion object {
         private const val TAG = "Viewer"
-        private const val MAX_TARGET_US = 1_500_000.0
+        // teto do buffer adaptativo (era 1.5s) — cap do pior caso mais curto para
+        // a imagem não ficar muito atrasada quando a rede tem picos de jitter
+        private const val MAX_TARGET_US = 1_000_000.0
         private const val V_LOOKAHEAD_US = 250_000.0 // feed decoder this far ahead
         private const val SAMPLE_RATE = 48000
         private const val US_PER_FRAME = 1e6 / SAMPLE_RATE
@@ -117,6 +126,7 @@ class Viewer(
     @Volatile private var stAFrm = 0
     @Volatile private var stUnder = 0
     @Volatile private var resLabelSet = false // depois do decoder pôr "WxH · Mbps", gates não sobrescrevem
+    @Volatile private var cfgBrMbps = -1.0    // bitrate anunciado pelo emissor (medidor)
     @Volatile private var lastAudioArrivalNs = 0L // frescura do áudio (gaps de screen-share)
     @Volatile private var lastRenderNs = 0L       // último frame realmente renderizado (vAge)
     @Volatile private var rxBytes = 0L            // débito de chegada — encontra o teto do caminho
@@ -125,6 +135,9 @@ class Viewer(
     @Volatile private var kfWallMs = 0L
     @Volatile private var kfTsUs = 0.0
     @Volatile private var e2eMs = -1
+    // menor e2e bruto já visto: serve de linha de base para o e2e RELATIVO, que
+    // é imune a relógios desalinhados entre emissor e viewer.
+    @Volatile private var e2eMinMs = Int.MAX_VALUE
 
     private var vThread: Thread? = null
     private var aThread: Thread? = null
@@ -159,6 +172,15 @@ class Viewer(
             // 1ª mensagem selada deriva a chave (PBKDF2 310k, algumas centenas de
             // ms UMA vez neste thread da ponte); depois é cache + AES-GCM (µs)
             data = PomboCrypto.open(data, pass) ?: run { encWarn("encrypted stream — wrong password"); return }
+        }
+        // mensagem de CONTROLO (0xC3): câmara on/off do emissor na chamada — não é
+        // média Wire, trata e sai antes do demux de registos
+        if (data.isNotEmpty() && (data[0].toInt() and 0xFF) == 0xC3) {
+            try {
+                val o = JSONObject(String(data, 1, data.size - 1, Charsets.UTF_8))
+                if (o.optString("t") == "cam") onCamState(o.optBoolean("on", true))
+            } catch (e: Exception) {}
+            return
         }
         Wire.forEachRecord(data) { rec ->
             // demux POR REGISTO: nos modos single-partition/mux o áudio viaja na
@@ -321,9 +343,11 @@ class Viewer(
                     codec = built.first; avccNalLen = built.second
                     waitingKey = false // frame IS the config keyframe — feed it
                     resLabelSet = true
-                    val ss = cfg.optJSONObject("streamSettings")
-                    if (ss != null) onState("${ss.optInt("width")}x${ss.optInt("height")} · ~${"%.1f".format(ss.optInt("bitrate") / 1e6)}Mbps")
-                    else onState("playing…")
+                    // estável = ecrã limpo: a resolução/bitrate vivem no medidor do
+                    // topo, não por cima do vídeo (resLabelSet trava os gates).
+                    onState("")
+                    // bitrate ANUNCIADO pelo emissor — métrica do medidor
+                    cfg.optJSONObject("streamSettings")?.let { cfgBrMbps = it.optInt("bitrate") / 1e6 }
                 } catch (e: Exception) {
                     Log.e(TAG, "decoder cfg", e); continue
                 }
@@ -389,11 +413,16 @@ class Viewer(
             val render = lateUs <= 120_000
             if (render) {
                 lastRenderNs = System.nanoTime()
-                // latência E2E real deste frame (captura→render), via âncora do kf
+                // Latência E2E deste frame (captura→render) pela âncora do keyframe.
+                // ATENÇÃO: compara o NOSSO relógio de parede com o do EMISSOR, por
+                // isso qualquer desfasamento entre máquinas entra inteiro no valor
+                // (já se mediu ~6,9s entre telemóvel e PC neste projeto). Guardamos
+                // o BRUTO e o mínimo histórico: a diferença cancela o desvio fixo.
                 if (kfWallMs > 0) {
                     val lat = (System.currentTimeMillis() - kfWallMs -
                         ((info.presentationTimeUs - kfTsUs) / 1000.0)).toInt()
                     e2eMs = if (e2eMs < 0) lat else (e2eMs * 7 + lat) / 8
+                    if (lat < e2eMinMs) e2eMinMs = lat // melhor caso observado
                 }
             }
             c.releaseOutputBuffer(idx, render) // drop if hopelessly late
@@ -486,8 +515,8 @@ class Viewer(
         val minBuf = AudioTrack.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val t = AudioTrack.Builder()
             .setAudioAttributes(AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_MEDIA)
-                .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE).build())
+                .setUsage(if (commAudio) AudioAttributes.USAGE_VOICE_COMMUNICATION else AudioAttributes.USAGE_MEDIA)
+                .setContentType(if (commAudio) AudioAttributes.CONTENT_TYPE_SPEECH else AudioAttributes.CONTENT_TYPE_MOVIE).build())
             .setAudioFormat(AudioFormat.Builder()
                 .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                 .setSampleRate(SAMPLE_RATE)
@@ -551,8 +580,11 @@ class Viewer(
                 continue
             }
             dry = false
-            if (SystemClock.elapsedRealtime() - lastUnderMs > 5000 && effTargetUs > baseTargetUs)
-                effTargetUs = max(baseTargetUs, effTargetUs - 3_000) // ~150ms/s decay at 50 pkt/s
+            // recuperação MAIS RÁPIDA: começa a encolher 2.5s após o último
+            // underrun (era 5s) e desce ~250ms/s — a latência acumulada num pico
+            // drena depressa em vez de ficar presa em cima
+            if (SystemClock.elapsedRealtime() - lastUnderMs > 2500 && effTargetUs > baseTargetUs)
+                effTargetUs = max(baseTargetUs, effTargetUs - 5_000) // ~250ms/s decay at 50 pkt/s
 
             when {
                 pkt.timestampUs < writtenMediaUs - 20_000 -> {
@@ -645,10 +677,10 @@ class Viewer(
             if (!running) break
             val rxMbps = (rxBytes - lastRx) * 8 / 1e6
             lastRx = rxBytes
-            onMeter(rxMbps)
             // silent wedge: frames fed but ZERO decoded in the last second
             val dFed = stVFrm - lastFed; val dDec = stVDec - lastDec
             lastFed = stVFrm; lastDec = stVDec
+            onMeter(rxMbps, dDec, cfgBrMbps) // dDec (frames em 1s) É o fps de decode
             if (dFed >= 3 && dDec == 0) stallSecs++ else if (dDec > 0) stallSecs = 0
             if (stallSecs >= 2) {
                 stallSecs = 0
@@ -661,13 +693,25 @@ class Viewer(
             val vAgeMs = if (lastRenderNs == 0L) -1 else ((System.nanoTime() - lastRenderNs) / 1_000_000).toInt()
             // espelho no logcat: permite medição automatizada (adb) sem UI
             Log.d(TAG, "stats vDec=$stVDec aFrm=$stAFrm rx=${"%.2f".format(rxMbps)} vAge=$vAgeMs e2e=$e2eMs under=$stUnder tgt=${(effTargetUs / 1000).toInt()}")
+            // linha de FEED uniforme (mesmo formato em watch/call/meeting): o
+            // consumidor prefixa "↓ [#slot net] · ". dDec (frames num 1s) É fps.
+            // stats detalhados (como antes): Mbps · fps · buffer de áudio (frames/ms)
+            // · buffer de vídeo (frames/ms) · alvo do buffer base/adaptativo (ms) ·
+            // e2e (captura→render) · underruns.
+            val aMs = (aSpan / 1000).toInt(); val vMs = (vSpan / 1000).toInt()
+            val baseTgtMs = (baseTargetUs / 1000).toInt(); val effTgtMs = (effTargetUs / 1000).toInt()
+            // e2e RELATIVO (acima do melhor caso): o desvio constante entre os
+            // relógios das duas máquinas cancela-se na subtração. O '*' marca
+            // relógios desalinhados — fisicamente o e2e nunca pode ser menor que
+            // o buffer de vídeo, por isso se o for, o valor bruto não é de fiar.
+            val e2eTxt = if (e2eMs < 0 || e2eMinMs == Int.MAX_VALUE) "—" else {
+                val rel = (e2eMs - e2eMinMs).coerceAtLeast(0)
+                "+${rel}ms" + if (e2eMs < vMs) "*" else ""
+            }
             onStats(
-                "vMsg=$stVMsg vFrames=$stVFrm vDecoded=$stVDec aFrames=$stAFrm rx=${"%.2f".format(rxMbps)}Mbps\n" +
-                "vBuf=$vN(${(vSpan / 1000).toInt()}ms) aBuf=$aN(${(aSpan / 1000).toInt()}ms) " +
-                "playing=${audioAnchored || vWallAnchorNs != 0L} vAge=${vAgeMs}ms under=$stUnder " +
-                "target=${(effTargetUs / 1000).toInt()}/${(baseTargetUs / 1000).toInt()}ms " +
-                "avOff=${((avOffsetUs ?: 0.0) / 1000).toInt()}ms" +
-                (if (e2eMs >= 0) " e2e=${e2eMs}ms" else "")
+                "${"%.2f".format(rxMbps)}Mbps · ${dDec}fps · " +
+                "aud ${aN}f/${aMs}ms · vid ${vN}f/${vMs}ms · " +
+                "tgt ${baseTgtMs}/${effTgtMs}ms · e2e $e2eTxt · ${stUnder}d"
             )
         }
     }

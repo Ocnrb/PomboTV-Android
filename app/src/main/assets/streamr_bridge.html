@@ -3,10 +3,85 @@
 <!-- SDK local (assets/streamr-sdk.min.js, servido por shouldInterceptRequest):
      arranque sem rede/CDN e funciona offline. Atualizar o ficheiro ao subir
      a versão do SDK. -->
+<!-- TRÁFEGO REAL: tem de correr ANTES do SDK. O bundle guarda a referência ao
+     WebSocket/RTCPeerConnection quando é avaliado; instrumentar depois deixava
+     de fora as ligações que ele abre — nomeadamente as PROXY (WebSocket para nós
+     Operator), que assim não entravam na conta. -->
+<script>
+window.__NetTraffic = (function () {
+  const pcs = new Set();
+  const last = new WeakMap();
+  let deadSent = 0, deadRecv = 0, wsSent = 0, wsRecv = 0, wsCount = 0;
+  const RTC = window.RTCPeerConnection;
+  if (RTC) window.RTCPeerConnection = class extends RTC {
+    constructor() { super(...arguments); pcs.add(this); }
+  };
+  function blen(d) {
+    if (!d) return 0;
+    if (typeof d === 'string') return d.length;
+    if (d.byteLength !== undefined) return d.byteLength;
+    if (d.size !== undefined) return d.size;
+    return 0;
+  }
+  const WS = window.WebSocket;
+  if (WS) {
+    const Patched = class extends WS {
+      constructor() {
+        super(...arguments);
+        wsCount++;
+        const snd = super.send.bind(this);
+        this.send = d => { wsSent += blen(d); return snd(d); };
+        this.addEventListener('message', e => { wsRecv += blen(e.data); });
+      }
+    };
+    ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'].forEach(k => { Patched[k] = WS[k]; });
+    window.WebSocket = Patched;
+  }
+  async function totals() {
+    let sent = 0, recv = 0;
+    for (const pc of Array.from(pcs)) {
+      if (pc.connectionState === 'closed') {
+        const l = last.get(pc); if (l) { deadSent += l.s; deadRecv += l.r; }
+        pcs.delete(pc); continue;
+      }
+      try {
+        let s = 0, r = 0;
+        (await pc.getStats()).forEach(rep => {
+          if (rep.type === 'transport') { s += rep.bytesSent || 0; r += rep.bytesReceived || 0; }
+        });
+        last.set(pc, { s: s, r: r });
+        sent += s; recv += r;
+      } catch (e) {}
+    }
+    return { sent: deadSent + sent + wsSent, recv: deadRecv + recv + wsRecv,
+             conns: pcs.size, ws: wsCount };
+  }
+  let prev = null;
+  async function rates() {
+    const t = await totals(), now = Date.now();
+    if (!prev) { prev = { s: t.sent, r: t.recv, t: now }; return { up: -1, down: -1, conns: t.conns, ws: t.ws }; }
+    const dt = (now - prev.t) / 1000;
+    const up = dt > 0 ? (t.sent - prev.s) * 8 / 1e6 / dt : 0;
+    const down = dt > 0 ? (t.recv - prev.r) * 8 / 1e6 / dt : 0;
+    prev = { s: t.sent, r: t.recv, t: now };
+    return { up: Math.max(0, up), down: Math.max(0, down), conns: t.conns, ws: t.ws };
+  }
+  return { rates: rates, totals: totals };
+})();
+</script>
 <script src="streamr-sdk.min.js"></script>
 </head><body>
 <script>
 'use strict';
+// Tráfego REAL de rede: o módulo está instalado ANTES do SDK (ver <head>), para
+// apanhar TODAS as ligações que ele abre — malha (WebRTC) e proxy (WebSocket).
+// Reporta ao nativo 1×/s: o medidor da app mostra tráfego, não payload.
+setInterval(async () => {
+  try {
+    const r = await window.__NetTraffic.rates();
+    if (r.up >= 0) Native.traffic(r.up, r.down, r.conns + r.ws);
+  } catch (e) {}
+}, 1000);
 // Headless transport bridge: the native app does ALL media work; this page only
 // moves opaque binary messages in/out of the Streamr network (base64 over the
 // JS bridge). Same streams / config as live-poc.html.
@@ -39,22 +114,15 @@ let proxyCountPub = 2, proxyCountSub = 2;
 // proxyOnly — malha COMPLETAMENTE proibida: sem join de malha, sem fallbacks;
 //             publishes sem proxy ativo são DESCARTADOS (um publish sem proxy
 //             entraria na malha automaticamente) e subscribes esperam operadores.
-// onePart (single-partition, modo GLOBAL): áudio+vídeo na #0; a #1 é IGNORADA
-// por completo — nem viewer, nem monitor, nem join lhe tocam.
-let meshStart = false, proxyOnly = false, onePart = false;
-function bridgeSetModes(mesh, pOnly, one) {
+// single-partition é o ÚNICO modo: áudio+vídeo na #0; a #1 é IGNORADA por
+// completo — nem viewer, nem monitor, nem join lhe tocam.
+const onePart = true;
+let meshStart = false, proxyOnly = false;
+function bridgeSetModes(mesh, pOnly) {
   proxyOnly = !!pOnly;
   meshStart = !!mesh && !proxyOnly; // proxy-only anula o fast start
-  const wasOnePart = onePart;
-  onePart = !!one;
   if (proxyOnly) { proxyCountPub = Math.max(1, proxyCountPub); proxyCountSub = Math.max(1, proxyCountSub); }
-  console.log('bridge: modes meshStart=' + meshStart + ' proxyOnly=' + proxyOnly + ' onePart=' + onePart);
-  // ligou single-partition em plena sessão → largar a subscrição da #1 se existir
-  if (onePart && !wasOnePart) {
-    for (const s of ['audio', 'monitor']) {}
-    if (subs.audio) { const s = subs.audio; delete subs.audio; audioForward = false; if (s) { try { s.unsubscribe(); } catch (e) {} } }
-    if (monitorSub) { const s = monitorSub; monitorSub = null; setLive(false); if (s) { try { s.unsubscribe(); } catch (e) {} } }
-  }
+  console.log('bridge: modes meshStart=' + meshStart + ' proxyOnly=' + proxyOnly);
 }
 function bridgeSetProxyCounts(pub, sub) {
   proxyCountPub = Math.max(0, Math.min(3, pub | 0));
@@ -279,14 +347,15 @@ setInterval(async () => {
     const pxPub = proxySet[kind + 'Pub'] ? Math.min(proxyCountPub, have) : 0;
     info[kind] = { proxy: Math.max(pxSub, pxPub), mesh: await meshNeighbors(kind) };
   }
-  // MEETING: o meu slot (ms, publish) + o controlo (#9) — contador consistente
+  // MEETING: rótulos genéricos (media = o meu slot; ctrl = a #9) — sem repetir
+  // o número do slot (já aparece na linha "↑ #N" da consola)
   if (PARTS.ms !== undefined) {
     const haveMs = (proxyNodes.ms || []).length;
-    info['slot#' + PARTS.ms] = { proxy: proxySet['msPub'] ? Math.min(proxyCountPub, haveMs) : 0, mesh: await meshNeighbors('ms') };
+    info['media'] = { proxy: proxySet['msPub'] ? Math.min(proxyCountPub, haveMs) : 0, mesh: await meshNeighbors('ms') };
     const haveC = (proxyNodes.ctrl || []).length;
     const cSub = proxySet['ctrlSub'] ? Math.min(proxyCountSub, haveC) : 0;
     const cPub = proxySet['ctrlPub'] ? Math.min(proxyCountPub, haveC) : 0;
-    info['ctrl#9'] = { proxy: Math.max(cSub, cPub), mesh: await meshNeighborsSp(mdefCtrl().streamId + '#' + mdefCtrl().partition) };
+    info['ctrl'] = { proxy: Math.max(cSub, cPub), mesh: await meshNeighborsSp(mdefCtrl().streamId + '#' + mdefCtrl().partition) };
   }
   if (Object.keys(info).length) try { Native.netinfo(JSON.stringify(info)); } catch (e) {}
 }, 5000);

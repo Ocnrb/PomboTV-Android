@@ -37,6 +37,10 @@ class StreamrBridge(
         fun onBridgeError(message: String)
         /** Per-stream overlay info: {"video":{"proxy":N,"mesh":N},…} every ~5s. */
         fun onBridgeNetInfo(json: String) {}
+        /** Tráfego REAL do transporte (todas as ligações de peer), 1×/s. O
+         *  publish/subscribe só contava payload da aplicação — numa malha o mesmo
+         *  frame sai para N vizinhos e quem vê também reencaminha. */
+        fun onBridgeTraffic(upMbps: Double, downMbps: Double, conns: Int) {}
         /** Live monitor: true = a broadcast is currently on air (audio flowing). */
         fun onBridgeLiveState(live: Boolean) {}
         /** Mensagem JSON do canal de controlo do meeting (#9). */
@@ -141,6 +145,11 @@ class StreamrBridge(
         fun netinfo(json: String) { main.post { listener.onBridgeNetInfo(json) } }
 
         @JavascriptInterface
+        fun traffic(up: Double, down: Double, conns: Int) {
+            main.post { listener.onBridgeTraffic(up, down, conns) }
+        }
+
+        @JavascriptInterface
         fun liveState(live: Boolean) { main.post { listener.onBridgeLiveState(live) } }
 
         @JavascriptInterface
@@ -178,10 +187,10 @@ class StreamrBridge(
     fun setProxyCounts(pub: Int, sub: Int) = js("bridgeSetProxyCounts($pub,$sub)")
 
     /** meshStart: arranca em malha e promove a proxy; proxyOnly: malha proibida
-     *  (sem fallbacks; publishes sem proxy são descartados na ponte);
-     *  onePart: single-partition — áudio+vídeo na #0, a #1 é ignorada. */
-    fun setModes(meshStart: Boolean, proxyOnly: Boolean, onePart: Boolean) =
-        js("bridgeSetModes($meshStart,$proxyOnly,$onePart)")
+     *  (sem fallbacks; publishes sem proxy são descartados na ponte).
+     *  single-partition (áudio+vídeo na #0, a #1 ignorada) é o único modo. */
+    fun setModes(meshStart: Boolean, proxyOnly: Boolean) =
+        js("bridgeSetModes($meshStart,$proxyOnly)")
 
     /** Monitor de live ativo (subscrição leve ao áudio) — onBridgeLiveState. */
     fun monitorStart() = js("bridgeMonitorStart()")

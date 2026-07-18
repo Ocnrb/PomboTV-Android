@@ -139,7 +139,7 @@
                 android:layout_height="60dp"
                 android:layout_marginTop="12dp"
                 android:background="@drawable/bg_btn_secondary"
-                android:text="Call · 1:1 (beta)"
+                android:text="Call · 1:1"
                 android:textAllCaps="false"
                 android:textColor="#FFFFFF"
                 android:textSize="16sp"
@@ -151,7 +151,7 @@
                 android:layout_height="60dp"
                 android:layout_marginTop="12dp"
                 android:background="@drawable/bg_btn_secondary"
-                android:text="Meeting (beta)"
+                android:text="Meeting"
                 android:textAllCaps="false"
                 android:textColor="#FFFFFF"
                 android:textSize="16sp"
@@ -355,23 +355,24 @@
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="Single partition"
+                            android:text="Mirror front camera"
                             android:textColor="@color/fg"
                             android:textSize="13sp" />
 
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="Audio + video in one partition; #1 fully ignored"
+                            android:text="Cosmetic, local preview only — applies to all modes"
                             android:textColor="@color/muted"
                             android:textSize="10sp" />
                     </LinearLayout>
 
                     <Switch
-                        android:id="@+id/onePartSw"
+                        android:id="@+id/mirrorSw"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content" />
                 </LinearLayout>
+
             </LinearLayout>
 
             <LinearLayout
@@ -486,6 +487,7 @@
             android:padding="24dp">
 
             <TextView
+                android:id="@+id/cfgTitle"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="12dp"
@@ -588,22 +590,6 @@
                     android:progress="15" />
 
                 <TextView
-                    android:id="@+id/kfLabel"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
-                    android:text="Keyframe 1.0 s"
-                    android:textColor="@color/fg"
-                    android:textSize="12sp" />
-
-                <SeekBar
-                    android:id="@+id/kf"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:max="14"
-                    android:progress="2" />
-
-                <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="12dp"
@@ -616,14 +602,32 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content" />
 
-                <CheckBox
-                    android:id="@+id/mirrorCb"
+                <!-- fps da partilha de ecrã: 30 (poupa banda/CPU) ou 60 (fluido em
+                     conteúdo animado). Aplica KEY_MAX_FPS_TO_ENCODER ao encoder. -->
+                <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="12dp"
-                    android:text="Mirror front camera preview (cosmetic, local only)"
-                    android:textColor="@color/fg"
+                    android:text="Frame rate"
+                    android:textColor="@color/muted"
                     android:textSize="12sp" />
+
+                <Spinner
+                    android:id="@+id/fpsSel"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp" />
+
+                <!-- só Meeting: bitrate adaptativo (escala com nº de participantes) -->
+                <CheckBox
+                    android:id="@+id/adaptCb"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:text="Adaptive bitrate (scales down as participants join)"
+                    android:textColor="@color/fg"
+                    android:textSize="12sp"
+                    android:visibility="gone" />
 
                 <TextView
                     android:layout_width="wrap_content"
@@ -659,6 +663,20 @@
                     android:text="Cancel"
                     android:textAllCaps="false"
                     android:textColor="#FFFFFF" />
+
+                <!-- só Call: entrar como convidado (o 1º a entrar é Host) -->
+                <Button
+                    android:id="@+id/cfgGuestBtn"
+                    android:layout_width="0dp"
+                    android:layout_height="54dp"
+                    android:layout_marginStart="6dp"
+                    android:layout_marginEnd="6dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_btn_secondary"
+                    android:text="Join (Guest)"
+                    android:textAllCaps="false"
+                    android:textColor="#FFFFFF"
+                    android:visibility="gone" />
 
                 <Button
                     android:id="@+id/startBtn"
@@ -755,6 +773,7 @@
                 android:orientation="horizontal">
 
                 <TextView
+                    android:id="@+id/bLiveChip"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:background="@drawable/bg_live"
@@ -801,16 +820,16 @@
                     android:layout_height="1dp"
                     android:layout_weight="1" />
 
-                <!-- consola no canto superior DIREITO, na linha do top bar -->
+                <!-- definições EM SESSÃO (res/bitrate/fps/áudio) sem sair do live -->
                 <ImageButton
-                    android:id="@+id/bConsoleBtn"
-                    android:layout_width="34dp"
-                    android:layout_height="34dp"
+                    android:id="@+id/bCogBtn"
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
                     android:background="@drawable/bg_roundbtn"
-                    android:contentDescription="Console"
+                    android:contentDescription="Settings"
                     android:padding="6dp"
                     android:scaleType="centerInside"
-                    android:src="@drawable/ic_code" />
+                    android:src="@drawable/ic_settings" />
             </LinearLayout>
 
             <!-- status na 2ª linha, por baixo do LIVE -->
@@ -824,11 +843,12 @@
                 android:textSize="10sp" />
         </LinearLayout>
 
+        <!-- consola por baixo do chip LIVE (canto superior ESQUERDO) -->
         <TextView
             android:id="@+id/bStats"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_gravity="top|end"
+            android:layout_gravity="top|start"
             android:layout_marginStart="12dp"
             android:layout_marginTop="84dp"
             android:layout_marginEnd="12dp"
@@ -839,19 +859,30 @@
             android:textSize="10sp"
             android:visibility="gone" />
 
-        <!-- rail vertical à esquerda: baixo→cima = zoom, mic, torch, flip, screen -->
+        <!-- rail vertical à DIREITA: cima→baixo = fullscreen, screen, flip, torch, mic, zoom -->
         <LinearLayout
             android:id="@+id/bControls"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_gravity="bottom|start"
+            android:layout_gravity="bottom|end"
             android:orientation="vertical"
             android:paddingStart="12dp"
             android:paddingEnd="12dp"
             android:paddingBottom="16dp">
 
+            <!-- fullscreen (esconde a status bar do Android) no TOPO do rail -->
+            <ImageButton
+                android:id="@+id/bFullscreenBtn"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="@drawable/bg_roundbtn"
+                android:contentDescription="Fullscreen"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_fullscreen" />
+
             <ImageButton
                 android:id="@+id/bSourceBtn"
+                android:layout_marginTop="10dp"
                 android:layout_width="48dp"
                 android:layout_height="48dp"
                 android:background="@drawable/bg_roundbtn"
@@ -902,13 +933,13 @@
                 android:textStyle="bold" />
         </LinearLayout>
 
-        <!-- End: pill flutuante no canto inferior direito (sempre visível) -->
+        <!-- End: pill flutuante no canto inferior ESQUERDO (espelhado) -->
         <Button
             android:id="@+id/stopBtn"
             android:layout_width="wrap_content"
             android:layout_height="48dp"
-            android:layout_gravity="bottom|end"
-            android:layout_marginEnd="16dp"
+            android:layout_gravity="bottom|start"
+            android:layout_marginStart="16dp"
             android:layout_marginBottom="16dp"
             android:background="@drawable/bg_stop"
             android:minWidth="0dp"
@@ -963,6 +994,7 @@
                 android:orientation="horizontal">
 
                 <TextView
+                    android:id="@+id/wLiveChip"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:background="@drawable/bg_live"
@@ -1008,17 +1040,6 @@
                     android:layout_width="0dp"
                     android:layout_height="1dp"
                     android:layout_weight="1" />
-
-                <!-- consola no canto superior DIREITO (consistente com o broadcast) -->
-                <ImageButton
-                    android:id="@+id/wConsoleBtn"
-                    android:layout_width="34dp"
-                    android:layout_height="34dp"
-                    android:background="@drawable/bg_roundbtn"
-                    android:contentDescription="Console"
-                    android:padding="6dp"
-                    android:scaleType="centerInside"
-                    android:src="@drawable/ic_code" />
             </LinearLayout>
 
             <!-- status na 2ª linha, por baixo do LIVE -->
@@ -1032,11 +1053,12 @@
                 android:textSize="10sp" />
         </LinearLayout>
 
+        <!-- consola por baixo do chip LIVE (canto superior ESQUERDO) -->
         <TextView
             android:id="@+id/wStats"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_gravity="top|end"
+            android:layout_gravity="top|start"
             android:layout_marginStart="12dp"
             android:layout_marginTop="84dp"
             android:layout_marginEnd="12dp"
@@ -1047,15 +1069,14 @@
             android:textSize="10sp"
             android:visibility="gone" />
 
-        <!-- volume VERTICAL: altura consistente em portrait e landscape
-             (a barra horizontal ficava curta/esticada conforme a orientação) -->
+        <!-- volume VERTICAL: aparece à ESQUERDA do rail, junto ao ícone de som -->
         <FrameLayout
             android:id="@+id/volPanel"
             android:layout_width="48dp"
             android:layout_height="170dp"
-            android:layout_gravity="bottom|start"
-            android:layout_marginStart="74dp"
-            android:layout_marginBottom="88dp"
+            android:layout_gravity="bottom|end"
+            android:layout_marginEnd="74dp"
+            android:layout_marginBottom="16dp"
             android:background="@drawable/bg_chip"
             android:visibility="gone">
 
@@ -1066,35 +1087,33 @@
                 android:layout_gravity="center" />
         </FrameLayout>
 
-        <!-- fullscreen ACIMA da pausa (canto inferior esquerdo, empilhado) -->
-        <ImageButton
-            android:id="@+id/fsBtn"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
-            android:layout_gravity="bottom|start"
-            android:layout_marginStart="16dp"
-            android:layout_marginBottom="76dp"
-            android:background="@drawable/bg_roundbtn"
-            android:contentDescription="Fullscreen"
-            android:scaleType="centerInside"
-            android:src="@drawable/ic_fullscreen" />
-
+        <!-- rail vertical à DIREITA (paridade com os outros modos):
+             cima→baixo = fullscreen, play/pausa, som -->
         <LinearLayout
             android:id="@+id/wControls"
-            android:layout_width="match_parent"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_gravity="bottom"
-            android:gravity="center_vertical"
-            android:orientation="horizontal"
-            android:paddingStart="16dp"
-            android:paddingTop="12dp"
-            android:paddingEnd="16dp"
+            android:layout_gravity="bottom|end"
+            android:orientation="vertical"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
             android:paddingBottom="16dp">
+
+            <!-- fullscreen (esconde a status bar do Android) no TOPO do rail -->
+            <ImageButton
+                android:id="@+id/fsBtn"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="@drawable/bg_roundbtn"
+                android:contentDescription="Fullscreen"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_fullscreen" />
 
             <ImageButton
                 android:id="@+id/ppBtn"
                 android:layout_width="48dp"
                 android:layout_height="48dp"
+                android:layout_marginTop="10dp"
                 android:background="@drawable/bg_roundbtn"
                 android:contentDescription="Pause"
                 android:scaleType="centerInside"
@@ -1104,32 +1123,30 @@
                 android:id="@+id/muteBtn"
                 android:layout_width="48dp"
                 android:layout_height="48dp"
-                android:layout_marginStart="10dp"
+                android:layout_marginTop="10dp"
                 android:background="@drawable/bg_roundbtn"
                 android:contentDescription="Mute"
                 android:scaleType="centerInside"
                 android:src="@drawable/ic_volume_up" />
-
-            <Space
-                android:layout_width="0dp"
-                android:layout_height="1dp"
-                android:layout_weight="1" />
-
-            <Button
-                android:id="@+id/leaveBtn"
-                android:layout_width="wrap_content"
-                android:layout_height="48dp"
-                android:layout_marginStart="10dp"
-                android:background="@drawable/bg_leave"
-                android:minWidth="0dp"
-                android:minHeight="0dp"
-                android:paddingStart="24dp"
-                android:paddingEnd="24dp"
-                android:text="Leave"
-                android:textAllCaps="false"
-                android:textColor="#FFFFFF"
-                android:textStyle="bold" />
         </LinearLayout>
+
+        <!-- Leave: pill flutuante no canto inferior ESQUERDO (espelhado) -->
+        <Button
+            android:id="@+id/leaveBtn"
+            android:layout_width="wrap_content"
+            android:layout_height="48dp"
+            android:layout_gravity="bottom|start"
+            android:layout_marginStart="16dp"
+            android:layout_marginBottom="16dp"
+            android:background="@drawable/bg_leave"
+            android:minWidth="0dp"
+            android:minHeight="0dp"
+            android:paddingStart="24dp"
+            android:paddingEnd="24dp"
+            android:text="Leave"
+            android:textAllCaps="false"
+            android:textColor="#FFFFFF"
+            android:textStyle="bold" />
     </FrameLayout>
 
     <!-- ======================= CALL 1:1 ======================= -->
@@ -1150,6 +1167,23 @@
                 android:id="@+id/callRemoteSurface"
                 android:layout_width="match_parent"
                 android:layout_height="match_parent" />
+
+            <!-- cobre da câmara cortada quando o NOSSO vídeo está no ecrã (swap) -->
+            <FrameLayout
+                android:id="@+id/cMainPh"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:background="#000000"
+                android:visibility="gone">
+
+                <ImageView
+                    android:layout_width="56dp"
+                    android:layout_height="56dp"
+                    android:layout_gravity="center"
+                    android:alpha="0.7"
+                    android:contentDescription="Camera off"
+                    android:src="@drawable/ic_cam_off" />
+            </FrameLayout>
         </com.livepoc.android.AspectFrameLayout>
 
         <ProgressBar
@@ -1173,6 +1207,23 @@
                 android:id="@+id/callLocalSurface"
                 android:layout_width="match_parent"
                 android:layout_height="match_parent" />
+
+            <!-- cobre da câmara cortada no PiP local -->
+            <FrameLayout
+                android:id="@+id/cLocalPh"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:background="#000000"
+                android:visibility="gone">
+
+                <ImageView
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:layout_gravity="center"
+                    android:alpha="0.7"
+                    android:contentDescription="Camera off"
+                    android:src="@drawable/ic_cam_off" />
+            </FrameLayout>
         </FrameLayout>
 
         <!-- top bar: linha 1 = CALL/timer + consola à direita; linha 2 = status -->
@@ -1190,6 +1241,7 @@
                 android:orientation="horizontal">
 
                 <TextView
+                    android:id="@+id/cCallChip"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:background="@drawable/bg_live"
@@ -1217,21 +1269,35 @@
                     android:textColor="#FFFFFF"
                     android:textSize="11sp" />
 
+                <TextView
+                    android:id="@+id/cMeter"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:background="@drawable/bg_chip"
+                    android:fontFamily="monospace"
+                    android:paddingStart="8dp"
+                    android:paddingTop="3dp"
+                    android:paddingEnd="8dp"
+                    android:paddingBottom="3dp"
+                    android:textColor="@color/fg"
+                    android:textSize="11sp" />
+
                 <Space
                     android:layout_width="0dp"
                     android:layout_height="1dp"
                     android:layout_weight="1" />
 
-                <!-- consola no canto superior DIREITO (consistente com watch/broadcast) -->
+                <!-- definições EM SESSÃO (res/bitrate/fps/áudio) sem sair da chamada -->
                 <ImageButton
-                    android:id="@+id/cConsoleBtn"
-                    android:layout_width="34dp"
-                    android:layout_height="34dp"
+                    android:id="@+id/cCogBtn"
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
                     android:background="@drawable/bg_roundbtn"
-                    android:contentDescription="Console"
+                    android:contentDescription="Settings"
                     android:padding="6dp"
                     android:scaleType="centerInside"
-                    android:src="@drawable/ic_code" />
+                    android:src="@drawable/ic_settings" />
             </LinearLayout>
 
             <!-- status na 2ª linha, por baixo do CALL -->
@@ -1245,11 +1311,12 @@
                 android:textSize="10sp" />
         </LinearLayout>
 
+        <!-- consola por baixo do chip CALL (canto superior ESQUERDO) -->
         <TextView
             android:id="@+id/cStats"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_gravity="top|end"
+            android:layout_gravity="top|start"
             android:layout_marginStart="12dp"
             android:layout_marginTop="84dp"
             android:layout_marginEnd="12dp"
@@ -1260,66 +1327,110 @@
             android:textSize="10sp"
             android:visibility="gone" />
 
+        <!-- rail vertical à DIREITA: cima→baixo = fullscreen, FIT/FILL, ecrã,
+             trocar câmara, cortar câmara, mic (paridade com o Meeting) -->
         <LinearLayout
             android:id="@+id/cControls"
-            android:layout_width="match_parent"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_gravity="bottom"
-            android:gravity="center_vertical"
-            android:orientation="horizontal"
-            android:paddingStart="16dp"
-            android:paddingTop="12dp"
-            android:paddingEnd="16dp"
+            android:layout_gravity="bottom|end"
+            android:orientation="vertical"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
             android:paddingBottom="16dp">
 
+            <!-- fullscreen (esconde a status bar do Android) no TOPO do rail -->
             <ImageButton
-                android:id="@+id/cMicBtn"
+                android:id="@+id/cFullscreenBtn"
                 android:layout_width="48dp"
                 android:layout_height="48dp"
                 android:background="@drawable/bg_roundbtn"
-                android:contentDescription="Mute microphone"
+                android:contentDescription="Fullscreen"
                 android:scaleType="centerInside"
-                android:src="@drawable/ic_mic" />
+                android:src="@drawable/ic_fullscreen" />
+
+            <!-- enquadramento do vídeo: FIT (letterbox) ↔ FILL (corta) -->
+            <TextView
+                android:id="@+id/cFitBtn"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginTop="10dp"
+                android:background="@drawable/bg_roundbtn"
+                android:gravity="center"
+                android:text="FIT"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+
+            <ImageButton
+                android:id="@+id/cScreenBtn"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginTop="10dp"
+                android:background="@drawable/bg_roundbtn"
+                android:contentDescription="Share screen in call"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_screen" />
 
             <ImageButton
                 android:id="@+id/cFlipBtn"
                 android:layout_width="48dp"
                 android:layout_height="48dp"
-                android:layout_marginStart="10dp"
+                android:layout_marginTop="10dp"
                 android:background="@drawable/bg_roundbtn"
                 android:contentDescription="Switch camera"
                 android:scaleType="centerInside"
                 android:src="@drawable/ic_flip" />
 
             <ImageButton
-                android:id="@+id/cScreenBtn"
+                android:id="@+id/cTorchBtn"
                 android:layout_width="48dp"
                 android:layout_height="48dp"
-                android:layout_marginStart="10dp"
+                android:layout_marginTop="10dp"
                 android:background="@drawable/bg_roundbtn"
-                android:contentDescription="Share screen in call"
+                android:contentDescription="Torch"
                 android:scaleType="centerInside"
-                android:src="@drawable/ic_screen" />
+                android:visibility="gone"
+                android:src="@drawable/ic_flash" />
 
-            <Space
-                android:layout_width="0dp"
-                android:layout_height="1dp"
-                android:layout_weight="1" />
-
-            <Button
-                android:id="@+id/cEndBtn"
-                android:layout_width="wrap_content"
+            <ImageButton
+                android:id="@+id/cCamBtn"
+                android:layout_width="48dp"
                 android:layout_height="48dp"
-                android:background="@drawable/bg_stop"
-                android:minWidth="0dp"
-                android:minHeight="0dp"
-                android:paddingStart="24dp"
-                android:paddingEnd="24dp"
-                android:text="End call"
-                android:textAllCaps="false"
-                android:textColor="#FFFFFF"
-                android:textStyle="bold" />
+                android:layout_marginTop="10dp"
+                android:background="@drawable/bg_roundbtn"
+                android:contentDescription="Camera on/off"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_cam" />
+
+            <ImageButton
+                android:id="@+id/cMicBtn"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginTop="10dp"
+                android:background="@drawable/bg_roundbtn"
+                android:contentDescription="Mute microphone"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_mic" />
         </LinearLayout>
+
+        <!-- End: pill flutuante no canto inferior ESQUERDO (espelhado) -->
+        <Button
+            android:id="@+id/cEndBtn"
+            android:layout_width="wrap_content"
+            android:layout_height="48dp"
+            android:layout_gravity="bottom|start"
+            android:layout_marginStart="16dp"
+            android:layout_marginBottom="16dp"
+            android:background="@drawable/bg_stop"
+            android:minWidth="0dp"
+            android:minHeight="0dp"
+            android:paddingStart="24dp"
+            android:paddingEnd="24dp"
+            android:text="End call"
+            android:textAllCaps="false"
+            android:textColor="#FFFFFF"
+            android:textStyle="bold" />
     </FrameLayout>
 
     <!-- ======================= MEETING (beta) ======================= -->
@@ -1367,16 +1478,24 @@
                             android:layout_height="match_parent" />
                     </com.livepoc.android.AspectFrameLayout>
 
-                    <!-- placeholder de câmara desligada -->
-                    <ImageView
+                    <!-- placeholder de câmara desligada: cobre OPACA (tapa a última
+                         frame congelada da surface) + ícone centrado -->
+                    <FrameLayout
                         android:id="@+id/meetLocalPh"
-                        android:layout_width="44dp"
-                        android:layout_height="44dp"
-                        android:layout_gravity="center"
-                        android:alpha="0.7"
-                        android:contentDescription="Camera off"
-                        android:src="@drawable/ic_cam_off"
-                        android:visibility="gone" />
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:background="#000000"
+                        android:visibility="gone">
+
+                        <ImageView
+                            android:id="@+id/meetLocalPhIcon"
+                            android:layout_width="44dp"
+                            android:layout_height="44dp"
+                            android:layout_gravity="center"
+                            android:alpha="0.7"
+                            android:contentDescription="Camera off"
+                            android:src="@drawable/ic_cam_off" />
+                    </FrameLayout>
 
                     <TextView
                         android:id="@+id/meetLocalLab"
@@ -1434,6 +1553,7 @@
                 android:orientation="horizontal">
 
                 <TextView
+                    android:id="@+id/meetChip"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:background="@drawable/bg_live"
@@ -1461,22 +1581,38 @@
                     android:textColor="#FFFFFF"
                     android:textSize="11sp" />
 
+                <TextView
+                    android:id="@+id/meetMeter"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:background="@drawable/bg_chip"
+                    android:fontFamily="monospace"
+                    android:paddingStart="8dp"
+                    android:paddingTop="3dp"
+                    android:paddingEnd="8dp"
+                    android:paddingBottom="3dp"
+                    android:textColor="@color/fg"
+                    android:textSize="11sp" />
+
                 <Space
                     android:layout_width="0dp"
                     android:layout_height="1dp"
                     android:layout_weight="1" />
 
+                <!-- definições EM SESSÃO (res/bitrate/fps/áudio) sem sair do meeting -->
                 <ImageButton
-                    android:id="@+id/meetConsoleBtn"
-                    android:layout_width="34dp"
-                    android:layout_height="34dp"
+                    android:id="@+id/meetCogBtn"
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
                     android:background="@drawable/bg_roundbtn"
-                    android:contentDescription="Console"
+                    android:contentDescription="Settings"
                     android:padding="6dp"
                     android:scaleType="centerInside"
-                    android:src="@drawable/ic_code" />
+                    android:src="@drawable/ic_settings" />
             </LinearLayout>
 
+            <!-- 2ª linha: só status/erros (sem "in meeting · slot") -->
             <TextView
                 android:id="@+id/meetStatus"
                 android:layout_width="wrap_content"
@@ -1487,11 +1623,12 @@
                 android:textSize="10sp" />
         </LinearLayout>
 
+        <!-- consola por baixo do chip MEET (canto superior ESQUERDO) -->
         <TextView
             android:id="@+id/meetStats"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_gravity="top|end"
+            android:layout_gravity="top|start"
             android:layout_marginStart="12dp"
             android:layout_marginTop="84dp"
             android:layout_marginEnd="12dp"
@@ -1502,56 +1639,27 @@
             android:textSize="10sp"
             android:visibility="gone" />
 
-        <!-- rail vertical à esquerda (consistente com broadcast/watch):
-             cima→baixo = ecrã, câmara on/off, flip, mic -->
+        <!-- rail vertical à DIREITA: cima→baixo = fullscreen, FIT/FILL, ecrã,
+             trocar câmara, cortar câmara, mic -->
         <LinearLayout
             android:id="@+id/meetControls"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_gravity="bottom|start"
+            android:layout_gravity="bottom|end"
             android:orientation="vertical"
             android:paddingStart="12dp"
             android:paddingEnd="12dp"
             android:paddingBottom="16dp">
 
+            <!-- fullscreen (esconde a status bar do Android) no TOPO do rail -->
             <ImageButton
-                android:id="@+id/meetScreenBtn"
+                android:id="@+id/meetFullscreenBtn"
                 android:layout_width="48dp"
                 android:layout_height="48dp"
                 android:background="@drawable/bg_roundbtn"
-                android:contentDescription="Share screen"
+                android:contentDescription="Fullscreen"
                 android:scaleType="centerInside"
-                android:src="@drawable/ic_screen" />
-
-            <ImageButton
-                android:id="@+id/meetCamBtn"
-                android:layout_width="48dp"
-                android:layout_height="48dp"
-                android:layout_marginTop="10dp"
-                android:background="@drawable/bg_roundbtn"
-                android:contentDescription="Camera on/off"
-                android:scaleType="centerInside"
-                android:src="@drawable/ic_cam" />
-
-            <ImageButton
-                android:id="@+id/meetFlipBtn"
-                android:layout_width="48dp"
-                android:layout_height="48dp"
-                android:layout_marginTop="10dp"
-                android:background="@drawable/bg_roundbtn"
-                android:contentDescription="Switch camera"
-                android:scaleType="centerInside"
-                android:src="@drawable/ic_flip" />
-
-            <ImageButton
-                android:id="@+id/meetMicBtn"
-                android:layout_width="48dp"
-                android:layout_height="48dp"
-                android:layout_marginTop="10dp"
-                android:background="@drawable/bg_roundbtn"
-                android:contentDescription="Mute microphone"
-                android:scaleType="centerInside"
-                android:src="@drawable/ic_mic" />
+                android:src="@drawable/ic_fullscreen" />
 
             <!-- enquadramento dos vídeos: FIT (letterbox) ↔ FILL (corta) -->
             <TextView
@@ -1565,15 +1673,66 @@
                 android:textColor="#FFFFFF"
                 android:textSize="11sp"
                 android:textStyle="bold" />
+
+            <ImageButton
+                android:id="@+id/meetScreenBtn"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginTop="10dp"
+                android:background="@drawable/bg_roundbtn"
+                android:contentDescription="Share screen"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_screen" />
+
+            <ImageButton
+                android:id="@+id/meetFlipBtn"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginTop="10dp"
+                android:background="@drawable/bg_roundbtn"
+                android:contentDescription="Switch camera"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_flip" />
+
+            <ImageButton
+                android:id="@+id/meetTorchBtn"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginTop="10dp"
+                android:background="@drawable/bg_roundbtn"
+                android:contentDescription="Torch"
+                android:scaleType="centerInside"
+                android:visibility="gone"
+                android:src="@drawable/ic_flash" />
+
+            <ImageButton
+                android:id="@+id/meetCamBtn"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginTop="10dp"
+                android:background="@drawable/bg_roundbtn"
+                android:contentDescription="Camera on/off"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_cam" />
+
+            <ImageButton
+                android:id="@+id/meetMicBtn"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginTop="10dp"
+                android:background="@drawable/bg_roundbtn"
+                android:contentDescription="Mute microphone"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_mic" />
         </LinearLayout>
 
-        <!-- Leave: pill flutuante no canto inferior direito (como o End) -->
+        <!-- Leave: pill flutuante no canto inferior ESQUERDO (espelhado) -->
         <Button
             android:id="@+id/meetLeaveBtn"
             android:layout_width="wrap_content"
             android:layout_height="48dp"
-            android:layout_gravity="bottom|end"
-            android:layout_marginEnd="16dp"
+            android:layout_gravity="bottom|start"
+            android:layout_marginStart="16dp"
             android:layout_marginBottom="16dp"
             android:background="@drawable/bg_stop"
             android:minWidth="0dp"
